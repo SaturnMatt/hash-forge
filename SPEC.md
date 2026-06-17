@@ -388,6 +388,7 @@ Durable output should be minimal and explicit:
 out/best.c
 out/best.txt
 out/report.md
+out/improvements.csv
 out/runs/*.md
 out/runs/*.c
 out/latest_report_path.txt
@@ -415,7 +416,12 @@ established non-cryptographic hash baselines. It should
 also include diversity telemetry: final scored-generation uniqueness, duplicate
 repairs, fresh random replacements, stagnation refreshes, and extra adaptive
 random immigrants, plus the number of champion starters loaded and the best
-candidate source ancestry.
+candidate source ancestry. It should include an improvement timeline showing
+each material best-candidate improvement with run generation, elapsed seconds,
+candidate source, quick/deep score state, fail flags, and total candidates
+evaluated so long-run convergence can be judged after the fact.
+`out/improvements.csv` should store the latest improvement timeline in compact
+CSV form.
 The latest report remains at `out/report.md`; completed runs should also archive
 a copy under `out/runs/`, with `out/latest_report_path.txt` pointing to it.
 The latest export remains at `out/best.c`; completed runs should also archive a

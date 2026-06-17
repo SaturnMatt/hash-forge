@@ -38,6 +38,7 @@
 #define MAX_CHAMPIONS 128
 #define MAX_CHAMPION_STARTERS 8
 #define CHAMPION_FINGERPRINT_SEED 123ull
+#define MAX_IMPROVEMENT_EVENTS 512
 
 #define FAIL_ZERO       0x01u
 #define FAIL_COLLISION  0x02u
@@ -75,6 +76,14 @@ typedef enum CandidateSource {
     SOURCE_STARTER,
     SOURCE_CHAMPION
 } CandidateSource;
+
+typedef enum ImprovementReason {
+    IMPROVEMENT_FIRST,
+    IMPROVEMENT_QUICK,
+    IMPROVEMENT_DEEP,
+    IMPROVEMENT_FLAGS,
+    IMPROVEMENT_TIE_BREAK
+} ImprovementReason;
 
 typedef struct Rng {
     uint64_t state;
@@ -162,6 +171,26 @@ typedef struct RunReport {
     uint32_t last_unique_candidates;
     uint32_t champion_starters_loaded;
     uint32_t crossover_children_per_generation;
+    struct ImprovementLog {
+        struct ImprovementEvent {
+            uint64_t run_generation;
+            double elapsed_seconds;
+            uint64_t candidate_id;
+            uint64_t parent_id;
+            uint32_t candidate_generation;
+            uint32_t instruction_count;
+            int64_t quick_score;
+            int64_t deep_score;
+            uint32_t fail_flags;
+            uint64_t total_candidates;
+            uint8_t source;
+            uint8_t reason;
+            uint8_t deep_known;
+        } events[MAX_IMPROVEMENT_EVENTS];
+        uint32_t count;
+        uint64_t total_count;
+        uint64_t omitted_count;
+    } improvements;
 } RunReport;
 
 typedef struct BenchOptions {
@@ -1131,6 +1160,67 @@ static int compare_candidates(const void *a_ptr, const void *b_ptr) {
     return 0;
 }
 
+static const char *improvement_reason_name(uint8_t reason) {
+    switch ((ImprovementReason)reason) {
+        case IMPROVEMENT_FIRST: return "first";
+        case IMPROVEMENT_QUICK: return "quick";
+        case IMPROVEMENT_DEEP: return "deep";
+        case IMPROVEMENT_FLAGS: return "flags";
+        case IMPROVEMENT_TIE_BREAK: return "tie-break";
+        default: return "unknown";
+    }
+}
+
+static uint8_t improvement_reason_for(const Candidate *previous, const Candidate *next) {
+    if (previous->quick_score == INT64_MIN) return IMPROVEMENT_FIRST;
+    if (fail_severity(next->fail_flags) < fail_severity(previous->fail_flags) ||
+        next->fail_flags < previous->fail_flags) {
+        return IMPROVEMENT_FLAGS;
+    }
+    if (next->deep_score != INT64_MIN && previous->deep_score != INT64_MIN &&
+        next->deep_score > previous->deep_score) {
+        return IMPROVEMENT_DEEP;
+    }
+    if (next->quick_score > previous->quick_score) return IMPROVEMENT_QUICK;
+    return IMPROVEMENT_TIE_BREAK;
+}
+
+static void append_improvement_event(struct ImprovementLog *log, const Candidate *candidate,
+                                     uint64_t run_generation, double elapsed_seconds,
+                                     uint64_t total_candidates, uint8_t reason) {
+    struct ImprovementEvent event;
+    memset(&event, 0, sizeof(event));
+    event.run_generation = run_generation;
+    event.elapsed_seconds = elapsed_seconds;
+    event.candidate_id = candidate->id;
+    event.parent_id = candidate->parent_id;
+    event.candidate_generation = candidate->generation;
+    event.instruction_count = candidate->instruction_count;
+    event.quick_score = candidate->quick_score;
+    event.deep_score = candidate->deep_score;
+    event.deep_known = candidate->deep_score != INT64_MIN ? 1u : 0u;
+    event.fail_flags = candidate->fail_flags;
+    event.total_candidates = total_candidates;
+    event.source = candidate->source;
+    event.reason = reason;
+
+    log->total_count++;
+    if (log->count < MAX_IMPROVEMENT_EVENTS) {
+        log->events[log->count++] = event;
+        return;
+    }
+
+    memmove(&log->events[1], &log->events[2],
+            (MAX_IMPROVEMENT_EVENTS - 2u) * sizeof(log->events[0]));
+    log->events[MAX_IMPROVEMENT_EVENTS - 1u] = event;
+    log->omitted_count++;
+}
+
+static const struct ImprovementEvent *last_improvement_event(const struct ImprovementLog *log) {
+    if (!log || log->count == 0) return NULL;
+    return &log->events[log->count - 1u];
+}
+
 static void print_instruction(FILE *out, const Instruction *ins, int c_syntax) {
     const char *dst = reg_names[ins->dst];
     if (!c_syntax) {
@@ -1469,6 +1559,38 @@ static void count_ops(const Candidate *candidate, uint32_t counts[OP_COUNT]) {
     }
 }
 
+static int write_improvements_csv(const RunReport *report, const char *path) {
+    FILE *csv = fopen(path, "wb");
+    if (!csv) {
+        fprintf(stderr, "failed to open %s\n", path);
+        return 0;
+    }
+
+    fprintf(csv, "index,run_generation,elapsed_seconds,candidate_id,parent_id,candidate_generation,source,instruction_count,quick_score,deep_score,deep_known,fail_flags,flag_names,total_candidates,reason\n");
+    for (uint32_t i = 0; i < report->improvements.count; i++) {
+        const struct ImprovementEvent *event = &report->improvements.events[i];
+        fprintf(csv, "%u,%llu,%.3f,%llx,%llx,%u,%s,%u,%lld,",
+                i + 1u,
+                (unsigned long long)event->run_generation,
+                event->elapsed_seconds,
+                (unsigned long long)event->candidate_id,
+                (unsigned long long)event->parent_id,
+                event->candidate_generation,
+                candidate_source_name(event->source),
+                event->instruction_count,
+                (long long)event->quick_score);
+        if (event->deep_known) fprintf(csv, "%lld", (long long)event->deep_score);
+        else fprintf(csv, "pending");
+        fprintf(csv, ",%u,0x%x,\"", event->deep_known, event->fail_flags);
+        print_fail_flags(csv, event->fail_flags);
+        fprintf(csv, "\",%llu,%s\n",
+                (unsigned long long)event->total_candidates,
+                improvement_reason_name(event->reason));
+    }
+    fclose(csv);
+    return 1;
+}
+
 static int write_markdown_report_to_path(const Candidate *candidate, const RunOptions *options, const RunReport *report, const char *path) {
     FILE *md = fopen(path, "wb");
     if (!md) {
@@ -1498,6 +1620,40 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Deep candidates evaluated: `%llu`\n", (unsigned long long)report->deep_candidates_evaluated);
     fprintf(md, "- Total hash functions evaluated: `%llu`\n\n",
             (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+
+    fprintf(md, "## Improvement timeline\n\n");
+    const struct ImprovementEvent *last_improvement = last_improvement_event(&report->improvements);
+    fprintf(md, "- Improvement events: `%llu`\n", (unsigned long long)report->improvements.total_count);
+    fprintf(md, "- Improvement events kept in report: `%u`\n", report->improvements.count);
+    fprintf(md, "- Omitted middle improvement events: `%llu`\n", (unsigned long long)report->improvements.omitted_count);
+    if (last_improvement) {
+        fprintf(md, "- Last improvement generation: `%llu`\n", (unsigned long long)last_improvement->run_generation);
+        fprintf(md, "- Last improvement elapsed seconds: `%.3f`\n\n", last_improvement->elapsed_seconds);
+    } else {
+        fprintf(md, "- Last improvement generation: `0`\n");
+        fprintf(md, "- Last improvement elapsed seconds: `0.000`\n\n");
+    }
+    fprintf(md, "| # | gen | elapsed | reason | id | source | quick | deep | flags | total candidates |\n");
+    fprintf(md, "|---:|---:|---:|---|---|---|---:|---:|---|---:|\n");
+    for (uint32_t i = 0; i < report->improvements.count; i++) {
+        const struct ImprovementEvent *event = &report->improvements.events[i];
+        fprintf(md, "| %u | %llu | %.3f | %s | `%llx` | %s | %lld | ",
+                i + 1u,
+                (unsigned long long)event->run_generation,
+                event->elapsed_seconds,
+                improvement_reason_name(event->reason),
+                (unsigned long long)event->candidate_id,
+                candidate_source_name(event->source),
+                (long long)event->quick_score);
+        if (event->deep_known) fprintf(md, "%lld", (long long)event->deep_score);
+        else fprintf(md, "pending");
+        fprintf(md, " | `0x%x` (", event->fail_flags);
+        print_fail_flags(md, event->fail_flags);
+        fprintf(md, ") | %llu |\n", (unsigned long long)event->total_candidates);
+    }
+    fprintf(md, "\n");
+    fprintf(md, "Early final improvement relative to total run generations is a plateau signal; ");
+    fprintf(md, "late improvement means the extra run budget was still finding better candidates.\n\n");
 
     fprintf(md, "## Diversity telemetry\n\n");
     fprintf(md, "- Unique candidates in last scored generation: `%u` of `%u`\n",
@@ -1670,6 +1826,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- `out/best.c`: standalone C hash function\n");
     fprintf(md, "- `out/best.txt`: compact machine-readable-ish best candidate details\n");
     fprintf(md, "- `out/report.md`: latest full human-readable run report\n");
+    fprintf(md, "- `out/improvements.csv`: latest improvement timeline as CSV\n");
     fprintf(md, "- `out/runs/*.md`: archived per-run reports\n");
     fprintf(md, "- `out/runs/*.c`: archived per-run standalone C exports\n");
     fprintf(md, "- `out/latest_report_path.txt`: path to the latest archived report\n");
@@ -1692,6 +1849,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     ensure_out_dir();
     Candidate exported_candidate;
     prune_candidate_for_export(candidate, &exported_candidate);
+    const struct ImprovementEvent *last_improvement = last_improvement_event(&report->improvements);
 
     FILE *c = fopen("out/best.c", "wb");
     if (!c) {
@@ -1788,6 +1946,12 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "duplicate_random_replacements: %llu\n", (unsigned long long)report->duplicate_random_replacements);
     fprintf(txt, "stagnation_refreshes: %llu\n", (unsigned long long)report->stagnation_refreshes);
     fprintf(txt, "adaptive_random_immigrants: %llu\n", (unsigned long long)report->adaptive_random_immigrants);
+    fprintf(txt, "improvement_count: %llu\n", (unsigned long long)report->improvements.total_count);
+    fprintf(txt, "improvement_events_kept: %u\n", report->improvements.count);
+    fprintf(txt, "improvement_events_omitted: %llu\n", (unsigned long long)report->improvements.omitted_count);
+    fprintf(txt, "last_improvement_generation: %llu\n",
+            (unsigned long long)(last_improvement ? last_improvement->run_generation : 0u));
+    fprintf(txt, "last_improvement_elapsed: %.3f\n", last_improvement ? last_improvement->elapsed_seconds : 0.0);
     fprintf(txt, "starter_candidates: %u\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(txt, "stagnation_refresh_enabled: %s\n", options->no_refresh ? "no" : "yes");
     fprintf(txt, "champion_starters: %u\n", report->champion_starters_loaded);
@@ -1813,7 +1977,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s champion_starters=%u source=%s crossover_children=%u\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -1830,9 +1994,14 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 options->no_refresh ? "no" : "yes",
                 report->champion_starters_loaded,
                 candidate_source_name(candidate->source),
-                report->crossover_children_per_generation);
+                report->crossover_children_per_generation,
+                (unsigned long long)report->improvements.total_count,
+                (unsigned long long)(last_improvement ? last_improvement->run_generation : 0u),
+                last_improvement ? last_improvement->elapsed_seconds : 0.0);
         fclose(summary);
     }
+
+    int wrote_improvements = write_improvements_csv(report, "out/improvements.csv");
 
     int history_exists = 0;
     FILE *history_read = fopen("out/history.csv", "rb");
@@ -1884,7 +2053,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     int wrote_latest = write_markdown_report_to_path(candidate, options, report, "out/report.md");
     int wrote_archive = write_markdown_report_to_path(candidate, options, report, archive_report_path);
     int copied_c_archive = copy_file_bytes("out/best.c", archive_c_path);
-    if (wrote_latest && wrote_archive && copied_c_archive) {
+    if (wrote_latest && wrote_archive && copied_c_archive && wrote_improvements) {
         FILE *archive_note = fopen("out/latest_report_path.txt", "wb");
         if (archive_note) {
             fprintf(archive_note, "%s\n", archive_report_path);
@@ -1897,7 +2066,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
         }
         save_champion_candidate(candidate, options, report, archive_report_path);
     }
-    return wrote_latest && wrote_archive && copied_c_archive;
+    return wrote_latest && wrote_archive && copied_c_archive && wrote_improvements;
 }
 
 static void make_reasonable_baseline(Candidate *candidate) {
@@ -2591,6 +2760,7 @@ static void print_progress_line(const RunOptions *options, uint64_t generation, 
 }
 
 static void print_final_report(const Candidate *candidate, const RunOptions *options, const RunReport *report, int exported) {
+    const struct ImprovementEvent *last_improvement = last_improvement_event(&report->improvements);
     printf("\n%s%sRun complete%s\n", c_bold(), c_green(), c_reset());
     printf("  %sstop reason%s        %s\n", c_dim(), c_reset(), report->stop_reason);
     printf("  %selapsed%s            %.3fs\n", c_dim(), c_reset(), report->elapsed_seconds);
@@ -2608,6 +2778,14 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sstagnation refresh%s  %llu (%llu extra immigrants)\n", c_dim(), c_reset(),
            (unsigned long long)report->stagnation_refreshes,
            (unsigned long long)report->adaptive_random_immigrants);
+    printf("  %simprovements%s       %llu", c_dim(), c_reset(),
+           (unsigned long long)report->improvements.total_count);
+    if (last_improvement) {
+        printf(" (last gen %llu at %.3fs)",
+               (unsigned long long)last_improvement->run_generation,
+               last_improvement->elapsed_seconds);
+    }
+    printf("\n");
     printf("  %schampion starters%s   %u\n", c_dim(), c_reset(), report->champion_starters_loaded);
     printf("  %sbest id%s            %s%016llx%s\n", c_dim(), c_reset(), c_cyan(), (unsigned long long)candidate->id, c_reset());
     printf("  %sbest source%s        %s\n", c_dim(), c_reset(), candidate_source_name(candidate->source));
@@ -2616,7 +2794,7 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sbest flags%s         %s0x%x%s (", c_dim(), c_reset(), candidate->fail_flags ? c_yellow() : c_green(), candidate->fail_flags, c_reset());
     print_fail_flags(stdout, candidate->fail_flags);
     printf(")\n");
-    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/runs/*, out/summary.txt" : "export failed");
+    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/improvements.csv, out/runs/*, out/summary.txt" : "export failed");
 }
 
 static int command_self_test(void) {
@@ -2700,6 +2878,8 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
     memset(&best_seen, 0, sizeof(best_seen));
     best_seen.quick_score = INT64_MIN;
     best_seen.deep_score = INT64_MIN;
+    struct ImprovementLog improvements;
+    memset(&improvements, 0, sizeof(improvements));
     uint64_t quick_candidates_evaluated = 0;
     uint64_t deep_candidates_evaluated = 0;
     uint64_t duplicate_repairs = 0;
@@ -2757,13 +2937,17 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
             qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
         }
 
+        double now_elapsed = elapsed_wall_seconds_since(start_seconds);
         if (best_seen.quick_score == INT64_MIN ||
             compare_candidates(&population[0], &best_seen) < 0) {
+            uint8_t improvement_reason = improvement_reason_for(&best_seen, &population[0]);
             best_seen = population[0];
             last_improvement_generation = generation;
+            append_improvement_event(&improvements, &best_seen, generation, now_elapsed,
+                                     quick_candidates_evaluated + deep_candidates_evaluated,
+                                     improvement_reason);
         }
 
-        double now_elapsed = elapsed_wall_seconds_since(start_seconds);
         if (print_status && (generation == 1 ||
             deep_generation ||
             generation_limit_reached(options, generation) ||
@@ -2848,7 +3032,8 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         score_threads,
         last_unique_candidates,
         champion_starters_loaded,
-        crossover_count
+        crossover_count,
+        improvements
     };
 
     if (best_out) *best_out = best_seen;

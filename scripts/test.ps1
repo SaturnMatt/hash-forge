@@ -14,6 +14,7 @@ $championsDir = Join-Path $root "out\champions"
 $historyMdPath = Join-Path $root "out\history.md"
 $bestCPath = Join-Path $root "out\best.c"
 $bestTxtPath = Join-Path $root "out\best.txt"
+$improvementsPath = Join-Path $root "out\improvements.csv"
 $latestReportPath = Join-Path $root "out\latest_report_path.txt"
 $latestExportPath = Join-Path $root "out\latest_export_path.txt"
 $historyPath = Join-Path $root "out\history.csv"
@@ -74,6 +75,9 @@ function Read-RunSummary {
     $championMatch = [regex]::Match($line, 'champion_starters=(\d+)')
     $sourceMatch = [regex]::Match($line, 'source=(\w+)')
     $crossoverMatch = [regex]::Match($line, 'crossover_children=(\d+)')
+    $improvementMatch = [regex]::Match($line, 'improvement_count=(\d+)')
+    $lastImprovementGenerationMatch = [regex]::Match($line, 'last_improvement_generation=(\d+)')
+    $lastImprovementElapsedMatch = [regex]::Match($line, 'last_improvement_elapsed=([0-9.]+)')
     [pscustomobject]@{
         Id = $match.Groups[1].Value
         CandidateGeneration = [uint64]$match.Groups[2].Value
@@ -93,6 +97,9 @@ function Read-RunSummary {
         ChampionStarters = if ($championMatch.Success) { [uint32]$championMatch.Groups[1].Value } else { 0 }
         Source = if ($sourceMatch.Success) { $sourceMatch.Groups[1].Value } else { "unknown" }
         CrossoverChildren = if ($crossoverMatch.Success) { [uint32]$crossoverMatch.Groups[1].Value } else { 16 }
+        ImprovementCount = if ($improvementMatch.Success) { [uint64]$improvementMatch.Groups[1].Value } else { 0 }
+        LastImprovementGeneration = if ($lastImprovementGenerationMatch.Success) { [uint64]$lastImprovementGenerationMatch.Groups[1].Value } else { 0 }
+        LastImprovementElapsed = if ($lastImprovementElapsedMatch.Success) { [double]$lastImprovementElapsedMatch.Groups[1].Value } else { 0.0 }
     }
 }
 
@@ -110,6 +117,9 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("- Champion starters loaded: ``$($summary.ChampionStarters)``")) "report missing champion starter run setting"
     Assert ($report -match [regex]::Escape("- Champion starter candidates: ``$($summary.ChampionStarters)``")) "report missing champion starter population setting"
     Assert ($report -match [regex]::Escape("- Total hash functions evaluated: ``$($summary.TotalCandidates)``")) "report missing total evaluated"
+    Assert ($report -match "Improvement timeline") "report missing improvement timeline"
+    Assert ($report -match [regex]::Escape("- Improvement events: ``$($summary.ImprovementCount)``")) "report missing improvement count"
+    Assert ($report -match [regex]::Escape("- Last improvement generation: ``$($summary.LastImprovementGeneration)``")) "report missing last improvement generation"
     Assert ($report -match "Diversity telemetry") "report missing diversity telemetry"
     Assert ($report -match "Unique candidates in last scored generation") "report missing unique candidate count"
     Assert ($report -match "Duplicate candidate repairs") "report missing duplicate repair count"
@@ -140,6 +150,7 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("out/runs/*.md")) "report missing archived report reference"
     Assert ($report -match [regex]::Escape("out/runs/*.c")) "report missing archived C export reference"
     Assert ($report -match [regex]::Escape("out/history.csv")) "report missing history CSV reference"
+    Assert ($report -match [regex]::Escape("out/improvements.csv")) "report missing improvements CSV reference"
     Assert ($report -match [regex]::Escape("out/baselines.md")) "report missing baselines report reference"
     Assert ($report -match "VM instruction listing") "report missing instruction listing"
     Assert ($report -match [regex]::Escape("out/best.c")) "report missing best.c reference"
@@ -157,6 +168,10 @@ function Assert-ReportContains($summary) {
     $history = Get-Content $historyPath
     Assert ($history[0] -match "unix_time,seed,run_generation") "history CSV missing expected header"
     Assert ($history.Count -ge 2) "history CSV missing run rows"
+    Assert (Test-Path $improvementsPath) "missing out\improvements.csv"
+    $improvements = Get-Content $improvementsPath
+    Assert ($improvements[0] -match "index,run_generation,elapsed_seconds") "improvements CSV missing expected header"
+    Assert ($improvements.Count -ge 2) "improvements CSV missing event rows"
 }
 
 function Invoke-RunAndReadSummary([string[]]$arguments) {
@@ -171,6 +186,8 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     Assert ($bestTxt -match "exported_instruction_count") "best.txt missing exported instruction count"
     Assert ($bestTxt -match "champion_starters") "best.txt missing champion starter count"
     Assert ($bestTxt -match "crossover_children") "best.txt missing crossover child count"
+    Assert ($bestTxt -match "improvement_count") "best.txt missing improvement count"
+    Assert ($bestTxt -match "last_improvement_generation") "best.txt missing last improvement generation"
     Assert ($bestTxt -match "source:") "best.txt missing source"
     $summary
 }
@@ -323,6 +340,8 @@ Assert ($thread1.Id -eq $thread4.Id) "thread=1 and thread=4 best ids differ"
 Assert ($thread1.Quick -eq $thread4.Quick) "thread=1 and thread=4 quick scores differ"
 Assert ($thread1.Deep -eq $thread4.Deep) "thread=1 and thread=4 deep scores differ"
 Assert ($thread1.TotalCandidates -eq $thread4.TotalCandidates) "thread=1 and thread=4 total evaluations differ"
+Assert ($thread1.ImprovementCount -eq $thread4.ImprovementCount) "thread=1 and thread=4 improvement counts differ"
+Assert ($thread1.LastImprovementGeneration -eq $thread4.LastImprovementGeneration) "thread=1 and thread=4 last improvement generations differ"
 
 foreach ($threads in @(2, 4, 999)) {
     $summary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--threads", "$threads", "--no-champions")
@@ -405,6 +424,7 @@ Assert ($championEnabled1.ChampionStarters -ge 1) "champion-enabled run did not 
 $championEnabled2 = Invoke-RunAndReadSummary @("run", "--seed", "222", "--generations", "3", "--threads", "2", "--quality", "quick")
 Assert ($championEnabled1.Id -eq $championEnabled2.Id) "champion-enabled deterministic runs chose different best ids"
 Assert ($championEnabled1.Quick -eq $championEnabled2.Quick) "champion-enabled deterministic runs had different quick scores"
+Assert ($championEnabled1.ImprovementCount -eq $championEnabled2.ImprovementCount) "champion-enabled deterministic runs had different improvement counts"
 $championDisabled = Invoke-RunAndReadSummary @("run", "--seed", "222", "--generations", "3", "--threads", "2", "--quality", "quick", "--no-champions")
 Assert ($championDisabled.ChampionStarters -eq 0) "no-champions run loaded champions"
 

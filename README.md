@@ -98,6 +98,7 @@ counts.
 out\best.c
 out\best.txt
 out\report.md
+out\improvements.csv
 out\runs\*.md
 out\runs\*.c
 out\latest_report_path.txt
@@ -125,7 +126,11 @@ the best candidate score breakdown, final multi-seed audit, operator histogram,
 baseline comparison scores, plus quick, deep, and total candidate hash functions
 evaluated during the run. It also records diversity telemetry for the final
 scored generation, duplicate-candidate repairs made while breeding, and any
-adaptive random-immigrant refreshes triggered by stagnant search.
+adaptive random-immigrant refreshes triggered by stagnant search. It includes
+an improvement timeline showing when the best candidate changed, with generation,
+elapsed seconds, source, scores, flags, and total candidates evaluated.
+`out\improvements.csv` stores the latest run's improvement timeline in compact
+CSV form for quick convergence checks.
 `out\runs\*.md` stores archived per-run copies of completed reports, while
 `out\latest_report_path.txt` points to the latest archived report.
 `out\runs\*.c` stores archived per-run standalone C exports, while
