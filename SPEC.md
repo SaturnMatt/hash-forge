@@ -42,6 +42,9 @@ system.
 - Platform: native Windows x64.
 - Compiler: Visual Studio C through the local VS 2022 Build Tools.
 - Build style: simple `build.ps1`; no CMake until needed.
+- Source layout: direct C modules under `src/`, with `hash_forge.c` kept as the
+  small CLI entry point and implementation split into core, VM, scoring,
+  reporting, evolution, and command-mode files.
 
 Release flags:
 

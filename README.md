@@ -7,8 +7,8 @@ The project will evolve short in-memory VM programs over `key`, `seed`, `hash`,
 and scratch registers, score them with hash64-inspired tests, and export the
 best candidates as standalone C.
 
-The current implementation is intentionally small: a single native C CLI plus a
-small hash-table support module used by tests.
+The current implementation is intentionally small: a native C CLI split into a
+few direct modules plus tiny support containers used by tests.
 
 ## Toolchain
 
@@ -43,6 +43,19 @@ The output binary is:
 
 ```txt
 build\hash-forge.exe
+```
+
+Main source layout:
+
+```txt
+src\hash_forge.c  CLI parsing and command dispatch
+src\hf_core.h     shared types, constants, and cross-module declarations
+src\hf_core.c     console, timing, names, PRNG, and small shared helpers
+src\hf_vm.c       VM execution, candidate ids, generation, mutation, crossover
+src\hf_score.c    hash-quality scoring and candidate ordering helpers
+src\hf_report.c   exports, reports, champion flat files, self-test fixtures
+src\hf_evolve.c   self-tests, scoring worker pool, and evolution run loop
+src\hf_modes.c    compare, policy, bench, baselines, champions, and history
 ```
 
 ## Commands

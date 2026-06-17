@@ -6,7 +6,16 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$src = Join-Path $root "src\hash_forge.c"
+$srcDir = Join-Path $root "src"
+$sources = @(
+    (Join-Path $srcDir "hash_forge.c"),
+    (Join-Path $srcDir "hf_core.c"),
+    (Join-Path $srcDir "hf_vm.c"),
+    (Join-Path $srcDir "hf_score.c"),
+    (Join-Path $srcDir "hf_report.c"),
+    (Join-Path $srcDir "hf_evolve.c"),
+    (Join-Path $srcDir "hf_modes.c")
+)
 $tableSrc = Join-Path $root "hash_table\hash_table_tiny.c"
 $tableTestSrc = Join-Path $root "hash_table\test_hash_table.c"
 $arraySrc = Join-Path $root "dynamic_array\dynamic_array_tiny.c"
@@ -43,7 +52,8 @@ if ($Config -eq "Release") {
     $linkFlags = ""
 }
 
-$cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /Fo`"$mainObj`" `"$src`" /Fe:`"$exe`" $linkFlags"
+$quotedSources = ($sources | ForEach-Object { "`"$_`"" }) -join " "
+$cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /Fo`"$objDir`" $quotedSources /Fe:`"$exe`" $linkFlags"
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
