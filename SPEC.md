@@ -171,17 +171,19 @@ deep_score_top_n: 8
 Loop:
 
 1. Initialize a population of random candidates.
-2. Quick-score every candidate.
-3. Sort/rank by quick score, fail flags, instruction count, and speed.
-4. Keep the top survivors.
-5. Fill the rest of the population with mutated children of survivors.
-6. Reserve a small lane for crossover children from survivor pairs.
-7. Reserve a small tail for fresh random immigrants.
-8. Repair duplicate candidate ids in the next generation through extra mutation
+2. Replace a tiny starter lane with a compact baseline mixer and deterministic
+   mutations of it.
+3. Quick-score every candidate.
+4. Sort/rank by quick score, fail flags, instruction count, and speed.
+5. Keep the top survivors.
+6. Fill the rest of the population with mutated children of survivors.
+7. Reserve a small lane for crossover children from survivor pairs.
+8. Reserve a small tail for fresh random immigrants.
+9. Repair duplicate candidate ids in the next generation through extra mutation
    or fresh random candidates.
-9. Periodically deep-score current leaders.
-10. Print compact live status.
-11. Continue until stopped or until an optional generation limit is reached.
+10. Periodically deep-score current leaders.
+11. Print compact live status.
+12. Continue until stopped or until an optional generation limit is reached.
 
 Mutation actions:
 
@@ -411,7 +413,8 @@ Acceptance criteria:
 
 - VM instruction behavior for MOV, ADD, MUL, XOR, shifts, and rotates.
 - Score calibration for constant, key-only, seed-only, xor-only, and baseline
-  mixer candidates, including the neighboring-input differential signal.
+  mixer candidates, including the compact starter and neighboring-input
+  differential signal.
 - Generator and mutation invariants: instruction bounds, valid opcodes and
   registers, hash writes, stable ids, and deterministic seeded behavior.
 

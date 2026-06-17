@@ -25,6 +25,7 @@
 #define SURVIVOR_COUNT 32
 #define CROSSOVER_COUNT 16
 #define IMMIGRANT_COUNT 8
+#define STARTER_COUNT 8
 #define STAGNATION_REFRESH_GENERATIONS 50
 #define STAGNATION_IMMIGRANT_COUNT 64
 #define DEEP_EVERY 25
@@ -889,6 +890,7 @@ static void print_fail_flags(FILE *out, uint32_t flags) {
 }
 
 static void make_reasonable_baseline(Candidate *candidate);
+static void make_compact_starter(Candidate *candidate);
 static void make_constant_bad(Candidate *candidate);
 static void make_key_only_bad(Candidate *candidate);
 static void make_seed_only_bad(Candidate *candidate);
@@ -948,6 +950,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
     fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
+    fprintf(md, "- Compact starter candidates: `%u`\n", STARTER_COUNT);
     fprintf(md, "- Stagnation refresh window: `%u` generations\n", STAGNATION_REFRESH_GENERATIONS);
     fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", STAGNATION_IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
@@ -1193,6 +1196,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "duplicate_random_replacements: %llu\n", (unsigned long long)report->duplicate_random_replacements);
     fprintf(txt, "stagnation_refreshes: %llu\n", (unsigned long long)report->stagnation_refreshes);
     fprintf(txt, "adaptive_random_immigrants: %llu\n", (unsigned long long)report->adaptive_random_immigrants);
+    fprintf(txt, "starter_candidates: %u\n", STARTER_COUNT);
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
     uint32_t op_counts[OP_COUNT];
@@ -1317,6 +1321,42 @@ static void make_reasonable_baseline(Candidate *candidate) {
     memcpy(candidate->instructions, p, sizeof(p));
     candidate->id = candidate_id(candidate);
     candidate->deep_score = INT64_MIN;
+}
+
+static void make_compact_starter(Candidate *candidate) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->instruction_count = 16;
+    Instruction p[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_ADD, 2, OPERAND_CONST, 0, 1, 0x9e3779b97f4a7c15ull },
+        { OP_MUL, 2, OPERAND_CONST, 0, 1, 0xbf58476d1ce4e5b9ull },
+        { OP_MOV, 3, OPERAND_REG, 1, 1, 0 },
+        { OP_ADD, 3, OPERAND_CONST, 0, 1, 0xd1b54a32d192ed03ull },
+        { OP_MUL, 3, OPERAND_CONST, 0, 1, 0x94d049bb133111ebull },
+        { OP_XOR, 2, OPERAND_REG, 3, 1, 0 },
+        { OP_MOV, 3, OPERAND_REG, 2, 1, 0 },
+        { OP_SHR, 3, OPERAND_CONST, 0, 30, 0 },
+        { OP_XOR, 2, OPERAND_REG, 3, 1, 0 },
+        { OP_MUL, 2, OPERAND_CONST, 0, 1, 0xbf58476d1ce4e5b9ull },
+        { OP_MOV, 3, OPERAND_REG, 2, 1, 0 },
+        { OP_SHR, 3, OPERAND_CONST, 0, 27, 0 },
+        { OP_XOR, 2, OPERAND_REG, 3, 1, 0 },
+        { OP_MUL, 2, OPERAND_CONST, 0, 1, 0x94d049bb133111ebull },
+        { OP_XOR, 2, OPERAND_CONST, 0, 1, 0xd1b54a32d192ed03ull }
+    };
+    memcpy(candidate->instructions, p, sizeof(p));
+    candidate->id = candidate_id(candidate);
+    candidate->deep_score = INT64_MIN;
+}
+
+static void seed_starter_population(Candidate *population, Rng *rng) {
+    Candidate starter;
+    make_compact_starter(&starter);
+    population[0] = starter;
+    for (uint32_t i = 1; i < STARTER_COUNT && i < POPULATION_SIZE; i++) {
+        mutate_candidate(&population[i], &starter, rng);
+        ensure_unique_candidate(&population[i], population, i, rng);
+    }
 }
 
 static void make_constant_bad(Candidate *candidate) {
@@ -1459,6 +1499,20 @@ static int run_calibration_self_tests(void) {
     make_reasonable_baseline(&baseline);
     ScoreResult baseline_score = score_candidate(&baseline, scratch, 1234, 1, QUALITY_NORMAL);
     printf("baseline_mixer score=%lld flags=0x%x\n", (long long)baseline_score.score, baseline_score.fail_flags);
+
+    Candidate starter;
+    make_compact_starter(&starter);
+    ScoreResult starter_score = score_candidate(&starter, scratch, 1234, 1, QUALITY_NORMAL);
+    printf("compact_starter score=%lld flags=0x%x\n", (long long)starter_score.score, starter_score.fail_flags);
+    if (!self_check(starter.instruction_count <= MAX_PROGRAM_LEN, "compact starter stays within generator instruction bound")) {
+        free(scratch);
+        return 0;
+    }
+    if (!self_check((starter_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_NO_HASH)) == 0,
+                    "compact starter core flags")) {
+        free(scratch);
+        return 0;
+    }
 
     if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_NO_HASH)) == 0,
                     "baseline mixer core flags")) {
@@ -1969,6 +2023,7 @@ static int command_run(const RunOptions *options) {
     for (uint32_t i = 0; i < POPULATION_SIZE; i++) {
         random_candidate(&population[i], &rng);
     }
+    seed_starter_population(population, &rng);
 
     uint64_t generation = 0;
     Candidate best_seen;

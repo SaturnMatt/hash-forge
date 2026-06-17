@@ -89,6 +89,7 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("- Scoring threads: ``$($summary.Threads)``")) "report missing thread count"
     Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
+    Assert ($report -match [regex]::Escape("- Compact starter candidates: ``8``")) "report missing starter count"
     Assert ($report -match [regex]::Escape("- Total hash functions evaluated: ``$($summary.TotalCandidates)``")) "report missing total evaluated"
     Assert ($report -match "Diversity telemetry") "report missing diversity telemetry"
     Assert ($report -match "Unique candidates in last scored generation") "report missing unique candidate count"
@@ -205,6 +206,7 @@ Set-Location $root
 & (Join-Path $root "build.ps1")
 
 $selfTest = Invoke-Captured $exe @("self-test")
+Assert ($selfTest.Output -match "compact_starter score=.*flags=0x") "self-test missing compact starter calibration"
 Assert ($selfTest.Output -match "bad_key_only score=.*flags=0x2f") "self-test no longer flags bad_key_only differential failure"
 Assert ($selfTest.Output -match "bad_seed_only score=.*flags=0x2f") "self-test no longer flags bad_seed_only differential failure"
 Assert ($selfTest.Output -match "bad_xor_only score=.*flags=0x2b") "self-test no longer flags bad_xor_only differential failure"

@@ -66,7 +66,9 @@ specific worker count. Worker threads and per-thread scratch buffers are created
 once at run start and reused for the whole run. Each generation keeps the top
 survivors, mutates most of the remaining population, recombines a small
 crossover lane from survivor pairs, and injects fresh random immigrants to
-preserve diversity. Duplicate candidate ids are repaired during breeding so a
+preserve diversity. Runs begin with a tiny compact-starter lane plus random
+candidates, so the forge has a known decent mixer family without losing broad
+exploration. Duplicate candidate ids are repaired during breeding so a
 generation spends less budget rechecking identical programs. On completion it
 writes:
 Opcode generation is lightly biased toward mixing-heavy operations such as
@@ -139,4 +141,5 @@ compiles `out/best.c` independently.
 
 `hash-forge self-test` includes VM instruction checks, score calibration for
 constant/key-only/seed-only/xor-only bad hashes, a baseline mixer comparison,
-differential-score calibration, and generator/mutation invariants.
+differential-score calibration, compact-starter calibration, and
+generator/mutation invariants.
