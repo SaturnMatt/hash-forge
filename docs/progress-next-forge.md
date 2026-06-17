@@ -141,7 +141,7 @@ Commit:
 
 ## Milestone 7: Artifact hygiene and pruning
 
-Status: in progress.
+Status: completed.
 
 Intended files:
 
@@ -264,4 +264,4 @@ are zero.
 
 Commit:
 
-- pending
+- `a1c27c4 Add artifact hygiene commands`
