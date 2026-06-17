@@ -79,6 +79,8 @@ checks. `normal` is the default.
 out\best.c
 out\best.txt
 out\report.md
+out\runs\*.md
+out\latest_report_path.txt
 out\summary.txt
 out\bench.md
 ```
@@ -89,6 +91,8 @@ stop reason, scores, decoded fail flags, and the best candidate instruction
 listing. It also records the best candidate operator histogram, baseline
 comparison scores, plus quick, deep, and total candidate hash functions
 evaluated during the run.
+`out\runs\*.md` stores archived per-run copies of completed reports, while
+`out\latest_report_path.txt` points to the latest archived report.
 
 `bench` measures quick and deep candidate scoring throughput for one or more
 thread counts and writes `out\bench.md`. Benchmark rates are machine-local

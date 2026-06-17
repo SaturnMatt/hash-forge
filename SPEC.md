@@ -324,6 +324,8 @@ Durable output should be minimal and explicit:
 out/best.c
 out/best.txt
 out/report.md
+out/runs/*.md
+out/latest_report_path.txt
 out/summary.txt
 out/bench.md
 ```
@@ -332,6 +334,8 @@ out/bench.md
 `report.md` should be the full human-readable report for the completed run,
 including quick, deep, and total candidate hash functions evaluated, plus a
 best-candidate operator histogram and baseline comparison scores.
+The latest report remains at `out/report.md`; completed runs should also archive
+a copy under `out/runs/`, with `out/latest_report_path.txt` pointing to it.
 
 ## Multithreading
 

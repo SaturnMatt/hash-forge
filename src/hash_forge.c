@@ -713,6 +713,14 @@ static int ensure_out_dir(void) {
     return 1;
 }
 
+static int ensure_out_runs_dir(void) {
+    ensure_out_dir();
+    if (HF_MKDIR("out/runs") != 0) {
+        /* Existing directory is fine; file creation below will catch real errors. */
+    }
+    return 1;
+}
+
 static void print_fail_flags(FILE *out, uint32_t flags) {
     int wrote = 0;
     if (flags == 0) {
@@ -741,10 +749,10 @@ static void count_ops(const Candidate *candidate, uint32_t counts[OP_COUNT]) {
     }
 }
 
-static int write_markdown_report(const Candidate *candidate, const RunOptions *options, const RunReport *report) {
-    FILE *md = fopen("out/report.md", "wb");
+static int write_markdown_report_to_path(const Candidate *candidate, const RunOptions *options, const RunReport *report, const char *path) {
+    FILE *md = fopen(path, "wb");
     if (!md) {
-        fprintf(stderr, "failed to open out/report.md\n");
+        fprintf(stderr, "failed to open %s\n", path);
         return 0;
     }
 
@@ -851,6 +859,8 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "- `out/best.c`: standalone C hash function\n");
     fprintf(md, "- `out/best.txt`: compact machine-readable-ish best candidate details\n");
     fprintf(md, "- `out/report.md`: full human-readable run report\n");
+    fprintf(md, "- `out/runs/*.md`: archived per-run reports\n");
+    fprintf(md, "- `out/latest_report_path.txt`: path to the latest archived report\n");
     fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
 
     fprintf(md, "## Interpretation note\n\n");
@@ -932,7 +942,27 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
         fclose(summary);
     }
-    return write_markdown_report(candidate, options, report);
+    ensure_out_runs_dir();
+    char archive_path[256];
+    unsigned long long elapsed_ms = (unsigned long long)(report->elapsed_seconds * 1000.0 + 0.5);
+    snprintf(archive_path, sizeof(archive_path),
+             "out/runs/seed_%llu_gen_%llu_ms_%llu_threads_%u_id_%llx.md",
+             (unsigned long long)options->seed,
+             (unsigned long long)report->run_generation,
+             elapsed_ms,
+             report->threads,
+             (unsigned long long)candidate->id);
+
+    int wrote_latest = write_markdown_report_to_path(candidate, options, report, "out/report.md");
+    int wrote_archive = write_markdown_report_to_path(candidate, options, report, archive_path);
+    if (wrote_latest && wrote_archive) {
+        FILE *archive_note = fopen("out/latest_report_path.txt", "wb");
+        if (archive_note) {
+            fprintf(archive_note, "%s\n", archive_path);
+            fclose(archive_note);
+        }
+    }
+    return wrote_latest && wrote_archive;
 }
 
 static void make_reasonable_baseline(Candidate *candidate) {
@@ -1525,7 +1555,7 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sbest flags%s         %s0x%x%s (", c_dim(), c_reset(), candidate->fail_flags ? c_yellow() : c_green(), candidate->fail_flags, c_reset());
     print_fail_flags(stdout, candidate->fail_flags);
     printf(")\n");
-    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/summary.txt" : "export failed");
+    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/runs/*.md, out/summary.txt" : "export failed");
 }
 
 static int command_self_test(void) {
