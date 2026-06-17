@@ -123,9 +123,10 @@ failure severity and score, prints a compact leaderboard, and writes
 `out\history.md` with total candidate counts, decoded flag names, and the
 starter/refresh policy used by each run.
 
-`bench` measures quick and deep candidate scoring throughput for one or more
-thread counts and quality modes, then writes `out\bench.md`. Benchmark rates
-are machine-local guidance for choosing thread counts, not hash quality scores.
+`bench` measures quick and deep scoring throughput for one or more thread counts
+and quality modes, including both candidates/sec and normalized hash evals/sec,
+then writes `out\bench.md`. Benchmark rates are machine-local guidance for
+choosing thread counts, not hash quality scores.
 
 `compare` runs deterministic short A/B policy trials for default, no-starter,
 no-refresh, and bare settings across one or more seeds, prints aggregate wins

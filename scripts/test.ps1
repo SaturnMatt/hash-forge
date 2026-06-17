@@ -180,8 +180,12 @@ function Assert-BenchReport([string[]]$expectedThreadTexts) {
     Assert ($bench -match "Quality") "bench report missing quality setting"
     Assert ($bench -match "quick/sec") "bench report missing quick/sec"
     Assert ($bench -match "deep/sec") "bench report missing deep/sec"
+    Assert ($bench -match "quick hash/sec") "bench report missing quick hash/sec"
+    Assert ($bench -match "deep hash/sec") "bench report missing deep hash/sec"
+    Assert ($bench -match "hash evals per candidate") "bench report missing hash eval count"
     Assert ($bench -match "Best quick throughput") "bench report missing best quick interpretation"
     Assert ($bench -match "Best deep throughput") "bench report missing best deep interpretation"
+    Assert ($bench -match "Best quick hash throughput") "bench report missing best quick hash interpretation"
     foreach ($text in $expectedThreadTexts) {
         Assert ($bench -match [regex]::Escape($text)) "bench report missing row fragment: $text"
     }
@@ -302,6 +306,8 @@ Assert ($benchResult.Output -match "Benchmark complete") "bench output missing c
 Assert ($benchResult.Output -match "quality") "bench output missing quality"
 Assert ($benchResult.Output -match "quick/sec") "bench output missing quick/sec"
 Assert ($benchResult.Output -match "deep/sec") "bench output missing deep/sec"
+Assert ($benchResult.Output -match "qhash/sec") "bench output missing qhash/sec"
+Assert ($benchResult.Output -match "dhash/sec") "bench output missing dhash/sec"
 Assert-BenchReport @("| 1 | 1 |", "| 2 | 2 |", "| 32 | 32 |")
 
 $compareResult = Invoke-Captured $exe @("compare", "--seed", "123", "--seeds", "1", "--generations", "3", "--threads", "1", "--quality", "quick")

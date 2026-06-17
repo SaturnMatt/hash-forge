@@ -336,9 +336,9 @@ compact table with policy wins and averages, then write `out/compare.md`.
 suite can prove it rejects obvious failures.
 
 `bench` measures scoring throughput for one or more thread counts and quality
-modes. It should time quick and deep scoring separately, print candidates/sec,
-and write `out/bench.md`. Benchmark results are machine-local tuning guidance,
-not hash quality scores.
+modes. It should time quick and deep scoring separately, print candidates/sec
+and normalized hash evals/sec, and write `out/bench.md`. Benchmark results are
+machine-local tuning guidance, not hash quality scores.
 
 `history --top <n>` reads `out/history.csv`, ranks completed runs by failure
 severity, deep score, quick score, total candidates evaluated, and recency,

@@ -160,6 +160,8 @@ typedef struct BenchResult {
     double deep_seconds;
     double quick_rate;
     double deep_rate;
+    double quick_hash_rate;
+    double deep_hash_rate;
 } BenchResult;
 
 typedef struct HistoryOptions {
@@ -357,6 +359,25 @@ static uint32_t deep_top_n_for_quality(QualityMode quality) {
     if (quality == QUALITY_QUICK) return 4;
     if (quality == QUALITY_DEEP) return 16;
     return DEEP_TOP_N;
+}
+
+static uint32_t score_hash_evals_per_candidate(QualityMode quality, int deep) {
+    int iterations = score_iterations_for_quality(quality, deep);
+    int bucket_iterations = deep ? iterations * 2 : iterations;
+    int bucket_step = deep ? 1 : 3;
+    int bucket_groups = 0;
+    for (int buckets = 2; buckets <= 64; buckets += bucket_step) bucket_groups++;
+    int bit_step = deep ? 1 : 4;
+    int avalanche_bits = 0;
+    for (int bit = 0; bit < 64; bit += bit_step) avalanche_bits++;
+
+    uint32_t evals = 4;
+    evals += (uint32_t)(iterations * 13);
+    evals += (uint32_t)(2 * bucket_groups * bucket_iterations);
+    evals += (uint32_t)(5 * avalanche_bits * iterations * 2);
+    evals += (uint32_t)(iterations * 6);
+    evals += (uint32_t)(iterations * 4);
+    return evals;
 }
 
 static uint64_t operand_value(const Instruction *ins, const uint64_t r[REG_COUNT]) {
@@ -2495,19 +2516,23 @@ static int write_bench_report(const BenchOptions *options, const BenchResult *re
     fprintf(md, "- Seconds per thread option: `%llu`\n", (unsigned long long)options->seconds);
     fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
-    fprintf(md, "- Deep sample size: `%u`\n\n", DEEP_TOP_N);
+    fprintf(md, "- Deep sample size: `%u`\n", DEEP_TOP_N);
+    fprintf(md, "- Quick hash evals per candidate: `%u`\n", score_hash_evals_per_candidate(options->quality, 0));
+    fprintf(md, "- Deep hash evals per candidate: `%u`\n\n", score_hash_evals_per_candidate(options->quality, 1));
 
     fprintf(md, "## Results\n\n");
-    fprintf(md, "| requested threads | actual threads | quick candidates | quick/sec | deep candidates | deep/sec |\n");
-    fprintf(md, "|---:|---:|---:|---:|---:|---:|\n");
+    fprintf(md, "| requested threads | actual threads | quick candidates | quick/sec | quick hash/sec | deep candidates | deep/sec | deep hash/sec |\n");
+    fprintf(md, "|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (uint32_t i = 0; i < result_count; i++) {
-        fprintf(md, "| %u | %u | %llu | %.0f | %llu | %.0f |\n",
+        fprintf(md, "| %u | %u | %llu | %.0f | %.0f | %llu | %.0f | %.0f |\n",
                 results[i].requested_threads,
                 results[i].actual_threads,
                 (unsigned long long)results[i].quick_candidates,
                 results[i].quick_rate,
+                results[i].quick_hash_rate,
                 (unsigned long long)results[i].deep_candidates,
-                results[i].deep_rate);
+                results[i].deep_rate,
+                results[i].deep_hash_rate);
     }
 
     if (result_count > 0) {
@@ -2522,6 +2547,10 @@ static int write_bench_report(const BenchOptions *options, const BenchResult *re
                 results[best_quick].actual_threads, results[best_quick].quick_rate);
         fprintf(md, "- Best deep throughput: `%u` threads at `%.0f` candidates/sec.\n",
                 results[best_deep].actual_threads, results[best_deep].deep_rate);
+        fprintf(md, "- Best quick hash throughput: `%.0f` hash evals/sec.\n",
+                results[best_quick].quick_hash_rate);
+        fprintf(md, "- Best deep hash throughput: `%.0f` hash evals/sec.\n",
+                results[best_deep].deep_hash_rate);
         fprintf(md, "- Benchmark rates are machine-local guidance, not a quality score.\n");
     }
 
@@ -2568,8 +2597,12 @@ static int command_bench(const BenchOptions *options) {
     printf("  %sseconds%s      %llu total per thread option\n", c_dim(), c_reset(), (unsigned long long)options->seconds);
     printf("  %squality%s      %s\n", c_dim(), c_reset(), quality_name(options->quality));
     printf("  %spopulation%s   %u candidates\n", c_dim(), c_reset(), POPULATION_SIZE);
-    printf("\n%s%9s  %7s  %14s  %12s  %14s  %12s%s\n",
-           c_dim(), "requested", "actual", "quick evals", "quick/sec", "deep evals", "deep/sec", c_reset());
+    uint32_t quick_hashes_per_candidate = score_hash_evals_per_candidate(options->quality, 0);
+    uint32_t deep_hashes_per_candidate = score_hash_evals_per_candidate(options->quality, 1);
+    printf("  %shash evals%s   quick %u/candidate, deep %u/candidate\n",
+           c_dim(), c_reset(), quick_hashes_per_candidate, deep_hashes_per_candidate);
+    printf("\n%s%9s  %7s  %14s  %12s  %12s  %14s  %12s  %12s%s\n",
+           c_dim(), "requested", "actual", "quick evals", "quick/sec", "qhash/sec", "deep evals", "deep/sec", "dhash/sec", c_reset());
 
     uint32_t result_count = 0;
     for (uint32_t i = 0; i < options->thread_count; i++) {
@@ -2602,13 +2635,17 @@ static int command_bench(const BenchOptions *options) {
 
         result->quick_rate = (double)result->quick_candidates / result->quick_seconds;
         result->deep_rate = (double)result->deep_candidates / result->deep_seconds;
-        printf("%s%9u%s  %7u  %14llu  %s%12.0f%s  %14llu  %s%12.0f%s\n",
+        result->quick_hash_rate = result->quick_rate * (double)quick_hashes_per_candidate;
+        result->deep_hash_rate = result->deep_rate * (double)deep_hashes_per_candidate;
+        printf("%s%9u%s  %7u  %14llu  %s%12.0f%s  %12.0f  %14llu  %s%12.0f%s  %12.0f\n",
                c_bold(), result->requested_threads, c_reset(),
                result->actual_threads,
                (unsigned long long)result->quick_candidates,
                c_green(), result->quick_rate, c_reset(),
+               result->quick_hash_rate,
                (unsigned long long)result->deep_candidates,
-               c_green(), result->deep_rate, c_reset());
+               c_green(), result->deep_rate, c_reset(),
+               result->deep_hash_rate);
     }
 
     int wrote = write_bench_report(options, results, result_count);
