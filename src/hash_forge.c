@@ -94,7 +94,8 @@ typedef struct Candidate {
 
 typedef struct ScoreScratch {
     uint64_t collision_keys[COLLISION_TABLE_SIZE];
-    uint8_t collision_used[COLLISION_TABLE_SIZE];
+    uint32_t collision_seen[COLLISION_TABLE_SIZE];
+    uint32_t collision_epoch;
     int bucket_counts[64];
     int bit_counts[64];
 } ScoreScratch;
@@ -607,8 +608,8 @@ static int collision_add(ScoreScratch *scratch, uint64_t h) {
     uint32_t mask = COLLISION_TABLE_SIZE - 1u;
     uint32_t at = (uint32_t)(h ^ (h >> 32)) & mask;
     for (;;) {
-        if (!scratch->collision_used[at]) {
-            scratch->collision_used[at] = 1;
+        if (scratch->collision_seen[at] != scratch->collision_epoch) {
+            scratch->collision_seen[at] = scratch->collision_epoch;
             scratch->collision_keys[at] = h;
             return 0;
         }
@@ -643,7 +644,11 @@ static int64_t score_zero(const Candidate *candidate, uint32_t *flags) {
 }
 
 static int64_t score_collisions(const Candidate *candidate, ScoreScratch *scratch, uint64_t seed, int iterations, uint32_t *flags, uint32_t *evals) {
-    memset(scratch->collision_used, 0, sizeof(scratch->collision_used));
+    scratch->collision_epoch++;
+    if (scratch->collision_epoch == 0) {
+        memset(scratch->collision_seen, 0, sizeof(scratch->collision_seen));
+        scratch->collision_epoch = 1;
+    }
     Rng rng = { seed };
     int collisions = 0;
     int outputs = 0;
