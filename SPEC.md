@@ -182,8 +182,10 @@ Loop:
 9. Repair duplicate candidate ids in the next generation through extra mutation
    or fresh random candidates.
 10. Periodically deep-score current leaders.
-11. Print compact live status.
-12. Continue until stopped or until an optional generation limit is reached.
+11. Preserve the best deep-scored candidate seen so export cannot lose a strong
+    deep-scored leader to later quick-ranking churn.
+12. Print compact live status.
+13. Continue until stopped or until an optional generation/time limit is reached.
 
 For policy experiments, `hash-forge run --no-crossover` disables the crossover
 lane and fills those slots with normal mutation children instead. This keeps the
@@ -440,6 +442,10 @@ ancestry. It should include an improvement timeline showing
 each material best-candidate improvement with run generation, elapsed seconds,
 candidate source, quick/deep score state, fail flags, and total candidates
 evaluated so long-run convergence can be judged after the fact.
+It should include a `Best trackers` section with the quick-ranked leader, the
+best periodically deep-scored leader, and the final export selection
+(`quick`, `deep-seen`, or `same`). The script-friendly summary should expose
+`best_quick_id`, `best_deep_seen_id`, and `export_selection`.
 `out/improvements.csv` should store the latest improvement timeline in compact
 CSV form.
 The latest report remains at `out/report.md`; completed runs should also archive

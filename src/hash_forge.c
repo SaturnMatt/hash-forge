@@ -87,6 +87,12 @@ typedef enum ImprovementReason {
     IMPROVEMENT_TIE_BREAK
 } ImprovementReason;
 
+typedef enum ExportSelection {
+    EXPORT_SELECTION_SAME,
+    EXPORT_SELECTION_QUICK,
+    EXPORT_SELECTION_DEEP_SEEN
+} ExportSelection;
+
 typedef struct Rng {
     uint64_t state;
 } Rng;
@@ -194,6 +200,10 @@ typedef struct RunReport {
     uint32_t final_winner_starter;
     uint64_t refresh_window;
     uint32_t refresh_immigrants;
+    Candidate best_quick_seen;
+    Candidate best_deep_seen;
+    uint32_t has_best_deep_seen;
+    uint8_t export_selection;
     struct ImprovementLog {
         struct ImprovementEvent {
             uint64_t run_generation;
@@ -1281,6 +1291,34 @@ static const char *improvement_reason_name(uint8_t reason) {
     }
 }
 
+static const char *export_selection_name(uint8_t selection) {
+    switch ((ExportSelection)selection) {
+        case EXPORT_SELECTION_SAME: return "same";
+        case EXPORT_SELECTION_QUICK: return "quick";
+        case EXPORT_SELECTION_DEEP_SEEN: return "deep-seen";
+        default: return "unknown";
+    }
+}
+
+static int deep_export_candidate_better(const Candidate *a, const Candidate *b) {
+    uint32_t a_severity = fail_severity(a->fail_flags);
+    uint32_t b_severity = fail_severity(b->fail_flags);
+    if (a_severity != b_severity) return a_severity < b_severity;
+    if (a->fail_flags != b->fail_flags) return a->fail_flags < b->fail_flags;
+    if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score;
+    if (a->quick_score != b->quick_score) return a->quick_score > b->quick_score;
+    if (a->instruction_count != b->instruction_count) return a->instruction_count < b->instruction_count;
+    return a->id < b->id;
+}
+
+static void update_best_deep_seen(Candidate *best_deep_seen, int *has_best_deep_seen, const Candidate *candidate) {
+    if (candidate->deep_score == INT64_MIN) return;
+    if (!*has_best_deep_seen || deep_export_candidate_better(candidate, best_deep_seen)) {
+        *best_deep_seen = *candidate;
+        *has_best_deep_seen = 1;
+    }
+}
+
 static uint8_t improvement_reason_for(const Candidate *previous, const Candidate *next) {
     if (previous->quick_score == INT64_MIN) return IMPROVEMENT_FIRST;
     if (fail_severity(next->fail_flags) < fail_severity(previous->fail_flags) ||
@@ -1807,6 +1845,29 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Deep score top N: `%u`\n", deep_top_n_for_quality(options->quality));
     fprintf(md, "- Instruction count range: `%u..%u`\n\n", MIN_PROGRAM_LEN, MAX_PROGRAM_LEN);
 
+    fprintf(md, "## Best trackers\n\n");
+    fprintf(md, "- Export selection: `%s`\n", export_selection_name(report->export_selection));
+    fprintf(md, "- Quick tracker ID: `%llx`\n", (unsigned long long)report->best_quick_seen.id);
+    fprintf(md, "- Quick tracker source: `%s`\n", candidate_source_name(report->best_quick_seen.source));
+    fprintf(md, "- Quick tracker score: quick `%lld`, deep `%lld`, flags `0x%x` (",
+            (long long)report->best_quick_seen.quick_score,
+            (long long)report->best_quick_seen.deep_score,
+            report->best_quick_seen.fail_flags);
+    print_fail_flags(md, report->best_quick_seen.fail_flags);
+    fprintf(md, ")\n");
+    if (report->has_best_deep_seen) {
+        fprintf(md, "- Deep-seen tracker ID: `%llx`\n", (unsigned long long)report->best_deep_seen.id);
+        fprintf(md, "- Deep-seen tracker source: `%s`\n", candidate_source_name(report->best_deep_seen.source));
+        fprintf(md, "- Deep-seen tracker score: quick `%lld`, deep `%lld`, flags `0x%x` (",
+                (long long)report->best_deep_seen.quick_score,
+                (long long)report->best_deep_seen.deep_score,
+                report->best_deep_seen.fail_flags);
+        print_fail_flags(md, report->best_deep_seen.fail_flags);
+        fprintf(md, ")\n\n");
+    } else {
+        fprintf(md, "- Deep-seen tracker: `none`\n\n");
+    }
+
     fprintf(md, "## Best candidate\n\n");
     fprintf(md, "- ID: `%llx`\n", (unsigned long long)candidate->id);
     fprintf(md, "- Parent ID: `%llx`\n", (unsigned long long)candidate->parent_id);
@@ -2065,6 +2126,22 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "quick_score: %lld\n", (long long)candidate->quick_score);
     fprintf(txt, "deep_score: %lld\n", (long long)candidate->deep_score);
     fprintf(txt, "fail_flags: 0x%x\n", candidate->fail_flags);
+    fprintf(txt, "best_quick_seen_id: %llu\n", (unsigned long long)report->best_quick_seen.id);
+    fprintf(txt, "best_quick_seen_source: %s\n", candidate_source_name(report->best_quick_seen.source));
+    fprintf(txt, "best_quick_seen_quick_score: %lld\n", (long long)report->best_quick_seen.quick_score);
+    fprintf(txt, "best_quick_seen_deep_score: %lld\n", (long long)report->best_quick_seen.deep_score);
+    fprintf(txt, "best_quick_seen_flags: 0x%x\n", report->best_quick_seen.fail_flags);
+    fprintf(txt, "best_deep_seen_id: %llu\n",
+            (unsigned long long)(report->has_best_deep_seen ? report->best_deep_seen.id : 0u));
+    fprintf(txt, "best_deep_seen_source: %s\n",
+            report->has_best_deep_seen ? candidate_source_name(report->best_deep_seen.source) : "none");
+    fprintf(txt, "best_deep_seen_quick_score: %lld\n",
+            (long long)(report->has_best_deep_seen ? report->best_deep_seen.quick_score : INT64_MIN));
+    fprintf(txt, "best_deep_seen_deep_score: %lld\n",
+            (long long)(report->has_best_deep_seen ? report->best_deep_seen.deep_score : INT64_MIN));
+    fprintf(txt, "best_deep_seen_flags: 0x%x\n",
+            report->has_best_deep_seen ? report->best_deep_seen.fail_flags : 0u);
+    fprintf(txt, "export_selection: %s\n", export_selection_name(report->export_selection));
     fprintf(txt, "quick_candidates_evaluated: %llu\n", (unsigned long long)report->quick_candidates_evaluated);
     fprintf(txt, "deep_candidates_evaluated: %llu\n", (unsigned long long)report->deep_candidates_evaluated);
     fprintf(txt, "total_candidates_evaluated: %llu\n",
@@ -2118,7 +2195,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu novelty_lane=%u novelty_candidates=%llu last_best_novelty=%llu last_avg_novelty=%llu starter_cap_enabled=%s starter_cap=%u starter_cap_after=%llu starter_cap_displacements=%llu last_starter_before_cap=%u last_starter_after_cap=%u final_winner_starter=%s starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu novelty_lane=%u novelty_candidates=%llu last_best_novelty=%llu last_avg_novelty=%llu starter_cap_enabled=%s starter_cap=%u starter_cap_after=%llu starter_cap_displacements=%llu last_starter_before_cap=%u last_starter_after_cap=%u final_winner_starter=%s starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f best_quick_id=%llu best_deep_seen_id=%llu export_selection=%s\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -2151,7 +2228,10 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 report->crossover_children_per_generation,
                 (unsigned long long)report->improvements.total_count,
                 (unsigned long long)(last_improvement ? last_improvement->run_generation : 0u),
-                last_improvement ? last_improvement->elapsed_seconds : 0.0);
+                last_improvement ? last_improvement->elapsed_seconds : 0.0,
+                (unsigned long long)report->best_quick_seen.id,
+                (unsigned long long)(report->has_best_deep_seen ? report->best_deep_seen.id : 0u),
+                export_selection_name(report->export_selection));
         fclose(summary);
     }
 
@@ -3025,6 +3105,21 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     }
     printf("\n");
     printf("  %schampion starters%s   %u\n", c_dim(), c_reset(), report->champion_starters_loaded);
+    printf("  %sexport selection%s    %s\n", c_dim(), c_reset(), export_selection_name(report->export_selection));
+    printf("  %squick tracker%s       %s%016llx%s  q=%lld d=%lld flags=0x%x\n",
+           c_dim(), c_reset(), c_cyan(), (unsigned long long)report->best_quick_seen.id, c_reset(),
+           (long long)report->best_quick_seen.quick_score,
+           (long long)report->best_quick_seen.deep_score,
+           report->best_quick_seen.fail_flags);
+    if (report->has_best_deep_seen) {
+        printf("  %sdeep-seen tracker%s   %s%016llx%s  q=%lld d=%lld flags=0x%x\n",
+               c_dim(), c_reset(), c_cyan(), (unsigned long long)report->best_deep_seen.id, c_reset(),
+               (long long)report->best_deep_seen.quick_score,
+               (long long)report->best_deep_seen.deep_score,
+               report->best_deep_seen.fail_flags);
+    } else {
+        printf("  %sdeep-seen tracker%s   none\n", c_dim(), c_reset());
+    }
     printf("  %sbest id%s            %s%016llx%s\n", c_dim(), c_reset(), c_cyan(), (unsigned long long)candidate->id, c_reset());
     printf("  %sbest source%s        %s\n", c_dim(), c_reset(), candidate_source_name(candidate->source));
     printf("  %sbest quick%s         %lld\n", c_dim(), c_reset(), (long long)candidate->quick_score);
@@ -3116,6 +3211,11 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
     memset(&best_seen, 0, sizeof(best_seen));
     best_seen.quick_score = INT64_MIN;
     best_seen.deep_score = INT64_MIN;
+    Candidate best_deep_seen;
+    memset(&best_deep_seen, 0, sizeof(best_deep_seen));
+    best_deep_seen.quick_score = INT64_MIN;
+    best_deep_seen.deep_score = INT64_MIN;
+    int has_best_deep_seen = 0;
     struct ImprovementLog improvements;
     memset(&improvements, 0, sizeof(improvements));
     uint64_t quick_candidates_evaluated = 0;
@@ -3183,6 +3283,9 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
                 return 1;
             }
             deep_candidates_evaluated += deep_top_n;
+            for (uint32_t i = 0; i < deep_top_n; i++) {
+                update_best_deep_seen(&best_deep_seen, &has_best_deep_seen, &population[i]);
+            }
             qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
         }
 
@@ -3325,6 +3428,19 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         return 1;
     }
     deep_candidates_evaluated += 1;
+    update_best_deep_seen(&best_deep_seen, &has_best_deep_seen, &best_seen);
+
+    Candidate export_best_seen = best_seen;
+    uint8_t export_selection = EXPORT_SELECTION_QUICK;
+    if (has_best_deep_seen) {
+        if (best_deep_seen.id == best_seen.id) {
+            export_selection = EXPORT_SELECTION_SAME;
+            export_best_seen = best_seen;
+        } else if (deep_export_candidate_better(&best_deep_seen, &best_seen)) {
+            export_selection = EXPORT_SELECTION_DEEP_SEEN;
+            export_best_seen = best_deep_seen;
+        }
+    }
 
     double elapsed = elapsed_wall_seconds_since(start_seconds);
     RunReport report = {
@@ -3351,13 +3467,17 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         starter_cap_displacements,
         last_starter_survivors_before_cap,
         last_starter_survivors_after_cap,
-        candidate_is_starter_lineage(&best_seen) ? 1u : 0u,
+        candidate_is_starter_lineage(&export_best_seen) ? 1u : 0u,
         refresh_window,
         refresh_immigrants,
+        best_seen,
+        best_deep_seen,
+        has_best_deep_seen ? 1u : 0u,
+        export_selection,
         improvements
     };
 
-    if (best_out) *best_out = best_seen;
+    if (best_out) *best_out = export_best_seen;
     if (report_out) *report_out = report;
 
     free(population);

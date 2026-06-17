@@ -476,3 +476,129 @@ candidates are not counted as starter-lineage by this cap.
 Commit hash:
 
 - `c9a1bfc Add starter survivor cap`
+
+## Milestone 5: Best deep seen export
+
+Status: in progress.
+
+Intended files:
+
+- `src/hash_forge.c`
+- `scripts/test.ps1`
+- `README.md`
+- `SPEC.md`
+- `docs/progress-ultimate-forge.md`
+
+Plan:
+
+- Track the best quick-ranked candidate seen and the best periodically
+  deep-scored candidate seen as separate run trackers.
+- Update the deep tracker whenever periodic deep scoring runs, and again after
+  the quick tracker receives final deep scoring.
+- Select the exported winner using clean/fail severity first, then deep score,
+  quick score, instruction count, and id.
+- Report both trackers and whether export came from quick, deep-seen, or the
+  same candidate.
+- Keep deep scoring bounded to the existing deep cadence plus final tracker
+  validation.
+
+Risks:
+
+- Existing deterministic ids will change when deep-seen export chooses a
+  different candidate; tests should assert determinism, not old ids.
+- Policy and champion output should continue to use the final exported candidate
+  returned by `run_evolution`.
+- Avoid deep-scoring full populations beyond the existing cadence.
+
+Verification plan:
+
+```txt
+.\build.ps1
+.\scripts\test.ps1
+git diff --check
+.\scripts\smoke.ps1
+```
+
+Experiment plan:
+
+```txt
+.\build\hash-forge.exe run --seed 9301 --seconds 10 --threads 32 --quality deep --no-champions
+```
+
+Record quick tracker, deep-seen tracker, export selection, final deep score, and
+whether the final export now retains the strongest deep-scored candidate.
+
+What changed:
+
+- Added `best_quick_seen` and `best_deep_seen` trackers to run reporting.
+- Updated the deep-seen tracker during existing periodic deep scoring and after
+  final deep validation of the quick tracker.
+- Selected final export by fail severity, fail flags, deep score, quick score,
+  instruction count, and id.
+- Added `## Best trackers` to `out/report.md`.
+- Added tracker fields and `export_selection` to `out/best.txt` and
+  `out/summary.txt`.
+- Added final CLI lines for export selection, quick tracker, and deep-seen
+  tracker.
+- Updated strict tests, README, and SPEC for the new tracker fields.
+
+Verification:
+
+```txt
+.\build.ps1
+pass
+
+.\scripts\test.ps1
+pass
+
+git diff --check
+pass, with existing CRLF normalization warnings only
+
+.\scripts\smoke.ps1
+pass
+```
+
+Experiment:
+
+```txt
+.\build\hash-forge.exe run --seed 9301 --seconds 10 --threads 32 --quality deep --no-champions
+```
+
+Key metrics:
+
+```txt
+stop_reason=time limit
+elapsed_seconds=10.011
+run_generation=1261
+quality=deep
+threads=32
+quick_candidates=322816
+deep_candidates=2033
+total_candidates=324849
+improvement_count=9
+last_improvement_generation=162
+export_selection=deep-seen
+best_quick_id=2964416027055366493
+best_quick_source=novelty
+best_quick_score=369602
+best_quick_deep=4503642
+best_deep_seen_id=13616487954457359647
+best_deep_seen_source=starter
+best_deep_seen_quick=367737
+best_deep_seen_deep=5133126
+final_export_id=13616487954457359647
+final_export_flags=0x0
+```
+
+Interpretation:
+
+This experiment hit the exact failure mode Milestone 5 was meant to fix. The
+quick tracker found a novelty-source candidate with the higher quick score, but
+its deep score was only 4,503,642. A previously deep-scored starter-source
+candidate had a lower quick score but a stronger clean deep score of 5,133,126,
+so export selection chose `deep-seen`. The final `out/best.c` now preserves the
+strongest deep-scored candidate instead of losing it to quick-ranking churn.
+
+Commit:
+
+- pending

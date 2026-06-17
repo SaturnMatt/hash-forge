@@ -141,6 +141,9 @@ scored generation, duplicate-candidate repairs made while breeding, and any
 adaptive random-immigrant refreshes triggered by stagnant search. It includes
 an improvement timeline showing when the best candidate changed, with generation,
 elapsed seconds, source, scores, flags, and total candidates evaluated.
+The report also separates the quick-ranked leader from the best periodically
+deep-scored candidate seen during the run, then records whether the exported
+winner came from the quick tracker, the deep-seen tracker, or both.
 `out\improvements.csv` stores the latest run's improvement timeline in compact
 CSV form for quick convergence checks.
 `out\runs\*.md` stores archived per-run copies of completed reports, while

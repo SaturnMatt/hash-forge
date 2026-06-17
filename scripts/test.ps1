@@ -85,6 +85,9 @@ function Read-RunSummary {
     $improvementMatch = [regex]::Match($line, 'improvement_count=(\d+)')
     $lastImprovementGenerationMatch = [regex]::Match($line, 'last_improvement_generation=(\d+)')
     $lastImprovementElapsedMatch = [regex]::Match($line, 'last_improvement_elapsed=([0-9.]+)')
+    $bestQuickIdMatch = [regex]::Match($line, 'best_quick_id=(\d+)')
+    $bestDeepSeenIdMatch = [regex]::Match($line, 'best_deep_seen_id=(\d+)')
+    $exportSelectionMatch = [regex]::Match($line, 'export_selection=(same|quick|deep-seen)')
     [pscustomobject]@{
         Id = $match.Groups[1].Value
         CandidateGeneration = [uint64]$match.Groups[2].Value
@@ -112,6 +115,9 @@ function Read-RunSummary {
         ImprovementCount = if ($improvementMatch.Success) { [uint64]$improvementMatch.Groups[1].Value } else { 0 }
         LastImprovementGeneration = if ($lastImprovementGenerationMatch.Success) { [uint64]$lastImprovementGenerationMatch.Groups[1].Value } else { 0 }
         LastImprovementElapsed = if ($lastImprovementElapsedMatch.Success) { [double]$lastImprovementElapsedMatch.Groups[1].Value } else { 0.0 }
+        BestQuickId = if ($bestQuickIdMatch.Success) { $bestQuickIdMatch.Groups[1].Value } else { "0" }
+        BestDeepSeenId = if ($bestDeepSeenIdMatch.Success) { $bestDeepSeenIdMatch.Groups[1].Value } else { "0" }
+        ExportSelection = if ($exportSelectionMatch.Success) { $exportSelectionMatch.Groups[1].Value } else { "unknown" }
     }
 }
 
@@ -143,6 +149,13 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Starter cap telemetry") "report missing starter cap telemetry"
     Assert ($report -match [regex]::Escape("- Starter cap enabled: ``$($summary.StarterCapEnabled)``")) "report missing starter cap enabled"
     Assert ($report -match [regex]::Escape("- Starter cap displacements: ``$($summary.StarterCapDisplacements)``")) "report missing starter cap displacement count"
+    Assert ($report -match "Best trackers") "report missing best tracker section"
+    Assert ($report -match [regex]::Escape("- Export selection: ``$($summary.ExportSelection)``")) "report missing export selection"
+    $quickTrackerHex = "{0:x}" -f ([uint64]$summary.BestQuickId)
+    Assert ($report -match [regex]::Escape("- Quick tracker ID: ``$quickTrackerHex``")) "report missing quick tracker id"
+    $deepTrackerHex = "{0:x}" -f ([uint64]$summary.BestDeepSeenId)
+    Assert ($summary.BestDeepSeenId -ne "0") "summary missing best deep-seen id"
+    Assert ($report -match [regex]::Escape("- Deep-seen tracker ID: ``$deepTrackerHex``")) "report missing deep-seen tracker id"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)
     Assert ($report -match [regex]::Escape("- ID: ``$hexId``")) "report missing best id"
     Assert ($report -match "Source ancestry") "report missing source ancestry"
@@ -198,6 +211,9 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     $result = Invoke-Captured $exe $arguments
     Assert ($result.Output -match "Run complete") "run output missing completion section"
     Assert ($result.Output -match "total evaluated") "run output missing total evaluated"
+    Assert ($result.Output -match "export selection") "run output missing export selection"
+    Assert ($result.Output -match "quick tracker") "run output missing quick tracker"
+    Assert ($result.Output -match "deep-seen tracker") "run output missing deep-seen tracker"
     $summary = Read-RunSummary
     Assert-ReportContains $summary
     Assert (Test-Path $bestCPath) "missing out\best.c"
@@ -210,6 +226,9 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     Assert ($bestTxt -match "novelty_candidates_admitted") "best.txt missing novelty admitted count"
     Assert ($bestTxt -match "starter_cap_enabled") "best.txt missing starter cap enabled"
     Assert ($bestTxt -match "starter_cap_displacements") "best.txt missing starter cap displacements"
+    Assert ($bestTxt -match "best_quick_seen_id") "best.txt missing quick tracker id"
+    Assert ($bestTxt -match "best_deep_seen_id") "best.txt missing deep-seen tracker id"
+    Assert ($bestTxt -match "export_selection") "best.txt missing export selection"
     Assert ($bestTxt -match "improvement_count") "best.txt missing improvement count"
     Assert ($bestTxt -match "last_improvement_generation") "best.txt missing last improvement generation"
     Assert ($bestTxt -match "source:") "best.txt missing source"
