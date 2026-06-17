@@ -96,6 +96,12 @@ typedef struct ScoreScratch {
 
 typedef struct ScoreResult {
     int64_t score;
+    int64_t zero_score;
+    int64_t collision_score;
+    int64_t bucket_score;
+    int64_t avalanche_score;
+    int64_t differential_score;
+    int64_t size_penalty;
     uint32_t fail_flags;
     uint32_t eval_count;
 } ScoreResult;
@@ -722,19 +728,26 @@ static int64_t score_differentials(const Candidate *candidate, ScoreScratch *scr
 
 static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
     const int iterations = score_iterations_for_quality(quality, deep);
-    ScoreResult result = { 0, 0, 0 };
+    ScoreResult result;
+    memset(&result, 0, sizeof(result));
     if (!writes_hash(candidate)) {
         result.fail_flags |= FAIL_NO_HASH;
         result.score -= 1000000;
     }
 
-    result.score += score_zero(candidate, &result.fail_flags);
+    result.zero_score = score_zero(candidate, &result.fail_flags);
     result.eval_count += 4;
-    result.score += score_collisions(candidate, scratch, mix_seed(run_seed, candidate->id, 11), iterations, &result.fail_flags, &result.eval_count);
-    result.score += score_buckets(candidate, scratch, mix_seed(run_seed, candidate->id, 22), deep ? iterations * 2 : iterations, deep, &result.fail_flags, &result.eval_count);
-    result.score += score_avalanche(candidate, scratch, mix_seed(run_seed, candidate->id, 33), iterations, deep, &result.fail_flags, &result.eval_count);
-    result.score += score_differentials(candidate, scratch, mix_seed(run_seed, candidate->id, 44), iterations, deep, &result.fail_flags, &result.eval_count);
-    result.score -= (int64_t)candidate->instruction_count * 20;
+    result.collision_score = score_collisions(candidate, scratch, mix_seed(run_seed, candidate->id, 11), iterations, &result.fail_flags, &result.eval_count);
+    result.bucket_score = score_buckets(candidate, scratch, mix_seed(run_seed, candidate->id, 22), deep ? iterations * 2 : iterations, deep, &result.fail_flags, &result.eval_count);
+    result.avalanche_score = score_avalanche(candidate, scratch, mix_seed(run_seed, candidate->id, 33), iterations, deep, &result.fail_flags, &result.eval_count);
+    result.differential_score = score_differentials(candidate, scratch, mix_seed(run_seed, candidate->id, 44), iterations, deep, &result.fail_flags, &result.eval_count);
+    result.size_penalty = -((int64_t)candidate->instruction_count * 20);
+    result.score += result.zero_score;
+    result.score += result.collision_score;
+    result.score += result.bucket_score;
+    result.score += result.avalanche_score;
+    result.score += result.differential_score;
+    result.score += result.size_penalty;
     return result;
 }
 
@@ -900,6 +913,25 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Fail flags: `0x%x` (", candidate->fail_flags);
     print_fail_flags(md, candidate->fail_flags);
     fprintf(md, ")\n\n");
+
+    fprintf(md, "## Score breakdown\n\n");
+    ScoreScratch *breakdown_scratch = (ScoreScratch *)calloc(1, sizeof(*breakdown_scratch));
+    if (breakdown_scratch) {
+        ScoreResult quick = score_candidate(candidate, breakdown_scratch, options->seed, 0, options->quality);
+        ScoreResult deep = score_candidate(candidate, breakdown_scratch, options->seed, 1, options->quality);
+        fprintf(md, "| component | quick | deep |\n");
+        fprintf(md, "|---|---:|---:|\n");
+        fprintf(md, "| zero/trivial | %lld | %lld |\n", (long long)quick.zero_score, (long long)deep.zero_score);
+        fprintf(md, "| collisions | %lld | %lld |\n", (long long)quick.collision_score, (long long)deep.collision_score);
+        fprintf(md, "| buckets | %lld | %lld |\n", (long long)quick.bucket_score, (long long)deep.bucket_score);
+        fprintf(md, "| avalanche | %lld | %lld |\n", (long long)quick.avalanche_score, (long long)deep.avalanche_score);
+        fprintf(md, "| differentials | %lld | %lld |\n", (long long)quick.differential_score, (long long)deep.differential_score);
+        fprintf(md, "| size penalty | %lld | %lld |\n", (long long)quick.size_penalty, (long long)deep.size_penalty);
+        fprintf(md, "| total | %lld | %lld |\n\n", (long long)quick.score, (long long)deep.score);
+        free(breakdown_scratch);
+    } else {
+        fprintf(md, "Skipped: failed to allocate score scratch space.\n\n");
+    }
 
     uint32_t op_counts[OP_COUNT];
     count_ops(candidate, op_counts);

@@ -358,8 +358,8 @@ It may include an optional `HASH_FORGE_BEST_TEST_MAIN` vector-test entry point
 so tests can compile and run the exported C against VM-derived expected outputs.
 `report.md` should be the full human-readable report for the completed run,
 including quick, deep, and total candidate hash functions evaluated, decoded
-fail flags, plus a best-candidate operator histogram and baseline comparison
-scores.
+fail flags, a quick/deep score breakdown, plus a best-candidate operator
+histogram and baseline comparison scores.
 The latest report remains at `out/report.md`; completed runs should also archive
 a copy under `out/runs/`, with `out/latest_report_path.txt` pointing to it.
 The latest export remains at `out/best.c`; completed runs should also archive a
