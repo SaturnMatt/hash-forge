@@ -54,7 +54,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads 8
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
-.\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32
+.\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 .\build\hash-forge.exe export-best
 ```
 
@@ -105,8 +105,8 @@ evaluated during the run.
 comparison across seeds, qualities, thread counts, scores, and candidate ids.
 
 `bench` measures quick and deep candidate scoring throughput for one or more
-thread counts and writes `out\bench.md`. Benchmark rates are machine-local
-guidance for choosing thread counts, not hash quality scores.
+thread counts and quality modes, then writes `out\bench.md`. Benchmark rates
+are machine-local guidance for choosing thread counts, not hash quality scores.
 
 ## Tests
 

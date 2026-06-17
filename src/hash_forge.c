@@ -124,6 +124,7 @@ typedef struct BenchOptions {
     uint64_t seconds;
     uint32_t threads[MAX_BENCH_THREAD_OPTIONS];
     uint32_t thread_count;
+    QualityMode quality;
     int have_seed;
     int have_seconds;
 } BenchOptions;
@@ -1880,6 +1881,7 @@ static int write_bench_report(const BenchOptions *options, const BenchResult *re
     fprintf(md, "## Settings\n\n");
     fprintf(md, "- Seed: `%llu`\n", (unsigned long long)options->seed);
     fprintf(md, "- Seconds per thread option: `%llu`\n", (unsigned long long)options->seconds);
+    fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Deep sample size: `%u`\n\n", DEEP_TOP_N);
 
@@ -1915,13 +1917,13 @@ static int write_bench_report(const BenchOptions *options, const BenchResult *re
     return 1;
 }
 
-static int run_bench_phase(ScorePool *pool, Candidate *candidates, uint32_t candidate_count, uint64_t seed, int deep, double seconds, uint64_t *evaluated, double *elapsed) {
+static int run_bench_phase(ScorePool *pool, Candidate *candidates, uint32_t candidate_count, uint64_t seed, int deep, QualityMode quality, double seconds, uint64_t *evaluated, double *elapsed) {
     double start = wall_seconds_now();
     double now = start;
     *evaluated = 0;
 
     do {
-        if (!score_pool_score(pool, candidates, candidate_count, seed, deep, QUALITY_NORMAL)) {
+        if (!score_pool_score(pool, candidates, candidate_count, seed, deep, quality)) {
             return 0;
         }
         *evaluated += candidate_count;
@@ -1952,6 +1954,7 @@ static int command_bench(const BenchOptions *options) {
     printf("\n%s%sHash Forge benchmark%s\n", c_bold(), c_cyan(), c_reset());
     printf("  %sseed%s         %llu\n", c_dim(), c_reset(), (unsigned long long)options->seed);
     printf("  %sseconds%s      %llu total per thread option\n", c_dim(), c_reset(), (unsigned long long)options->seconds);
+    printf("  %squality%s      %s\n", c_dim(), c_reset(), quality_name(options->quality));
     printf("  %spopulation%s   %u candidates\n", c_dim(), c_reset(), POPULATION_SIZE);
     printf("\n%s%9s  %7s  %14s  %12s  %14s  %12s%s\n",
            c_dim(), "requested", "actual", "quick evals", "quick/sec", "deep evals", "deep/sec", c_reset());
@@ -1972,13 +1975,13 @@ static int command_bench(const BenchOptions *options) {
         result->actual_threads = pool.thread_count;
 
         if (!run_bench_phase(&pool, population, POPULATION_SIZE, mix_seed(options->seed, requested, 1), 0,
-                             phase_seconds, &result->quick_candidates, &result->quick_seconds)) {
+                             options->quality, phase_seconds, &result->quick_candidates, &result->quick_seconds)) {
             score_pool_destroy(&pool);
             free(population);
             return 1;
         }
         if (!run_bench_phase(&pool, population, DEEP_TOP_N, mix_seed(options->seed, requested, 2), 1,
-                             phase_seconds, &result->deep_candidates, &result->deep_seconds)) {
+                             options->quality, phase_seconds, &result->deep_candidates, &result->deep_seconds)) {
             score_pool_destroy(&pool);
             free(population);
             return 1;
@@ -2045,7 +2048,7 @@ static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
     printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>]\n", program);
-    printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>]\n", program);
+    printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s export-best\n", program);
 }
 
@@ -2115,6 +2118,7 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
 static int parse_bench_options(int argc, char **argv, BenchOptions *options) {
     memset(options, 0, sizeof(*options));
     options->seed = 123;
+    options->quality = QUALITY_NORMAL;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             if (!parse_u64(argv[++i], &options->seed)) {
@@ -2131,6 +2135,18 @@ static int parse_bench_options(int argc, char **argv, BenchOptions *options) {
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             if (!parse_thread_list(argv[++i], options)) {
                 fprintf(stderr, "invalid --threads list\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
+            const char *quality = argv[++i];
+            if (strcmp(quality, "quick") == 0) {
+                options->quality = QUALITY_QUICK;
+            } else if (strcmp(quality, "normal") == 0) {
+                options->quality = QUALITY_NORMAL;
+            } else if (strcmp(quality, "deep") == 0) {
+                options->quality = QUALITY_DEEP;
+            } else {
+                fprintf(stderr, "invalid --quality value\n");
                 return 0;
             }
         } else {

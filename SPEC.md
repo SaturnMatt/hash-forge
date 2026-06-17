@@ -283,7 +283,7 @@ hash-forge run --seed 123 --generations 1000 --seconds 60
 hash-forge run --seed 123 --seconds 60 --threads 8
 hash-forge run --seed 123 --seconds 60 --threads auto
 hash-forge run --seed 123 --seconds 60 --quality deep
-hash-forge bench --seconds 2 --threads 1,2,4,8,16,32
+hash-forge bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 hash-forge export-best
 ```
 
@@ -302,10 +302,10 @@ and deep-score leader count. `normal` is the default.
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
 
-`bench` measures scoring throughput for one or more thread counts. It should
-time quick and deep scoring separately, print candidates/sec, and write
-`out/bench.md`. Benchmark results are machine-local tuning guidance, not hash
-quality scores.
+`bench` measures scoring throughput for one or more thread counts and quality
+modes. It should time quick and deep scoring separately, print candidates/sec,
+and write `out/bench.md`. Benchmark results are machine-local tuning guidance,
+not hash quality scores.
 
 ## Output And Persistence
 

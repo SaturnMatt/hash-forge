@@ -158,6 +158,7 @@ function Assert-BenchReport([string[]]$expectedThreadTexts) {
     Assert (Test-Path $benchPath) "missing out\bench.md"
     $bench = Get-Content $benchPath -Raw
     Assert ($bench -match "hash-forge benchmark report") "bench report missing title"
+    Assert ($bench -match "Quality") "bench report missing quality setting"
     Assert ($bench -match "quick/sec") "bench report missing quick/sec"
     Assert ($bench -match "deep/sec") "bench report missing deep/sec"
     Assert ($bench -match "Best quick throughput") "bench report missing best quick interpretation"
@@ -237,8 +238,9 @@ Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop
 Assert ($timeSummary.Threads -eq 4) "time-limited run reported wrong thread count"
 Assert ($timeSummary.TotalCandidates -gt 0) "time-limited run had zero total candidates"
 
-$benchResult = Invoke-Captured $exe @("bench", "--seed", "123", "--seconds", "1", "--threads", "1,2,999")
+$benchResult = Invoke-Captured $exe @("bench", "--seed", "123", "--seconds", "1", "--threads", "1,2,999", "--quality", "quick")
 Assert ($benchResult.Output -match "Benchmark complete") "bench output missing completion section"
+Assert ($benchResult.Output -match "quality") "bench output missing quality"
 Assert ($benchResult.Output -match "quick/sec") "bench output missing quick/sec"
 Assert ($benchResult.Output -match "deep/sec") "bench output missing deep/sec"
 Assert-BenchReport @("| 1 | 1 |", "| 2 | 2 |", "| 32 | 32 |")
