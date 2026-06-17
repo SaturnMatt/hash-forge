@@ -82,6 +82,12 @@ src\hf_modes.c    compare, policy, bench, baselines, champions, and history
 .\build\hash-forge.exe artifacts
 .\build\hash-forge.exe prune --dry-run
 .\build\hash-forge.exe prune --keep-runs 200 --keep-days 14 --yes
+.\build\hash-forge.exe db init
+.\build\hash-forge.exe db import-champions
+.\build\hash-forge.exe db add-latest
+.\build\hash-forge.exe db top --limit 20
+.\build\hash-forge.exe db rescore
+.\build\hash-forge.exe db verify
 .\build\hash-forge.exe export-best
 ```
 
@@ -141,6 +147,8 @@ out\champions\*.hfch
 out\champions.md
 out\artifacts.md
 out\prune-plan.md
+out\hash-forge.db
+out\db-top.md
 ```
 
 `out\best.c` is standalone C containing the exported winner. Export removes
@@ -211,6 +219,12 @@ latest pointers, and protected artifact count. It writes `out\artifacts.md`.
 Real deletion requires `--yes`. Pruning only considers archive report/export
 pairs under `out\runs\`, keeps protected champion/latest artifacts, refuses
 paths outside `out\`, and preserves report/export pairs together.
+
+`db` maintains a small local best-hash database at `out\hash-forge.db`.
+It can initialize the database, import existing champion flat files, add the
+latest exported candidate, rescore stale records when the scoring fingerprint
+changes, verify stored VM instruction records, and write a top-hashes report at
+`out\db-top.md`. The database is a tiny plain-text local store, not SQLite.
 
 ## Tests
 

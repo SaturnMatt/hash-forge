@@ -14,7 +14,8 @@ $sources = @(
     (Join-Path $srcDir "hf_score.c"),
     (Join-Path $srcDir "hf_report.c"),
     (Join-Path $srcDir "hf_evolve.c"),
-    (Join-Path $srcDir "hf_modes.c")
+    (Join-Path $srcDir "hf_modes.c"),
+    (Join-Path $srcDir "hf_db.c")
 )
 $tableSrc = Join-Path $root "hash_table\hash_table_tiny.c"
 $tableTestSrc = Join-Path $root "hash_table\test_hash_table.c"

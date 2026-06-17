@@ -49,6 +49,7 @@ static void print_usage(const char *program) {
     printf("  %s history [--top <n>]\n", program);
     printf("  %s artifacts [--out-dir <out-subdir>]\n", program);
     printf("  %s prune [--dry-run] [--keep-runs <n>] [--keep-days <n>] [--out-dir <out-subdir>] [--yes]\n", program);
+    printf("  %s db <init|import-champions|add-latest|top|rescore|verify> [--limit <n>]\n", program);
     printf("  %s export-best\n", program);
 }
 
@@ -462,6 +463,34 @@ static int parse_prune_options(int argc, char **argv, PruneOptions *options) {
     return 1;
 }
 
+static int parse_db_options(int argc, char **argv, DbOptions *options) {
+    memset(options, 0, sizeof(*options));
+    options->limit = 20;
+    if (argc < 3) {
+        fprintf(stderr, "db requires an action\n");
+        return 0;
+    }
+    if (strlen(argv[2]) >= sizeof(options->action)) {
+        fprintf(stderr, "invalid db action\n");
+        return 0;
+    }
+    strcpy(options->action, argv[2]);
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) {
+            uint64_t limit = 0;
+            if (!parse_u64(argv[++i], &limit) || limit == 0 || limit > MAX_HISTORY_ROWS) {
+                fprintf(stderr, "invalid --limit value\n");
+                return 0;
+            }
+            options->limit = (uint32_t)limit;
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int command_export_best(void) {
     FILE *file = fopen("out/best.c", "rb");
     if (!file) {
@@ -555,6 +584,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_prune(&options);
+    }
+
+    if (strcmp(argv[1], "db") == 0) {
+        DbOptions options;
+        if (!parse_db_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_db(&options);
     }
 
     if (strcmp(argv[1], "export-best") == 0) {

@@ -335,6 +335,12 @@ hash-forge history --top 10
 hash-forge artifacts
 hash-forge prune --dry-run
 hash-forge prune --keep-runs 200 --keep-days 14 --yes
+hash-forge db init
+hash-forge db import-champions
+hash-forge db add-latest
+hash-forge db top --limit 20
+hash-forge db rescore
+hash-forge db verify
 hash-forge export-best
 ```
 
@@ -405,6 +411,14 @@ require `--yes` for deletion. It may remove old `out/runs/*.md` and
 current latest files, history, champion records, champion-referenced archives,
 latest pointer targets, or anything outside `out/`.
 
+`db` maintains a durable local best-hash index at `out/hash-forge.db`. The v1
+database may be a small plain-text store instead of SQLite if vendoring SQLite
+would make the project too large. It should store candidate ids, VM
+instructions, scores, audit data, report/export paths, run metadata, and scoring
+fingerprints. `db top` must not silently rank stale scores as current; stale
+records should be rescored under the current fingerprint before ranking. It
+should write `out/db-top.md`.
+
 ## Output And Persistence
 
 The hot loop should not depend on disk.
@@ -441,6 +455,8 @@ out/champions/*.hfch
 out/champions.md
 out/artifacts.md
 out/prune-plan.md
+out/hash-forge.db
+out/db-top.md
 ```
 
 `best.c` should be a standalone exported C function, independent of the VM.

@@ -815,6 +815,13 @@ int export_best(const Candidate *candidate, const RunOptions *options, const Run
         print_instruction(txt, &candidate->instructions[i], 0);
         fprintf(txt, "\n");
     }
+    fprintf(txt, "\ninstructions_csv:\n");
+    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
+        const Instruction *ins = &candidate->instructions[i];
+        fprintf(txt, "%u,%u,%u,%u,%u,%llx\n",
+                ins->op, ins->dst, ins->operand_kind, ins->operand_reg,
+                ins->shift, (unsigned long long)ins->constant);
+    }
     fclose(txt);
 
     FILE *summary = fopen("out/summary.txt", "wb");

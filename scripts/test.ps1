@@ -16,6 +16,8 @@ $championsDir = Join-Path $root "out\champions"
 $historyMdPath = Join-Path $root "out\history.md"
 $artifactsPath = Join-Path $root "out\artifacts.md"
 $prunePlanPath = Join-Path $root "out\prune-plan.md"
+$dbPath = Join-Path $root "out\hash-forge.db"
+$dbTopPath = Join-Path $root "out\db-top.md"
 $bestCPath = Join-Path $root "out\best.c"
 $bestTxtPath = Join-Path $root "out\best.txt"
 $improvementsPath = Join-Path $root "out\improvements.csv"
@@ -369,6 +371,14 @@ function Assert-PrunePlan {
     Assert ($plan -match "Bytes to reclaim") "prune plan missing reclaim bytes"
 }
 
+function Assert-DbTopReport {
+    Assert (Test-Path $dbTopPath) "missing out\db-top.md"
+    $dbTop = Get-Content $dbTopPath -Raw
+    Assert ($dbTop -match "hash-forge best hash database") "db top report missing title"
+    Assert ($dbTop -match "Current scoring fingerprint") "db top report missing fingerprint"
+    Assert ($dbTop -match "audit worst") "db top report missing audit column"
+}
+
 function New-PruneFixture {
     $fixture = Join-Path $root "out\prune-fixture"
     Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
@@ -403,6 +413,8 @@ try {
 Set-Location $root
 Remove-Item -LiteralPath $championsDir -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $championsPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $dbPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $dbTopPath -Force -ErrorAction SilentlyContinue
 & (Join-Path $root "build.ps1")
 
 $selfTest = Invoke-Captured $exe @("self-test")
@@ -589,6 +601,33 @@ Assert (-not (Test-Path $deleteMd)) "real prune kept unprotected report"
 Assert (-not (Test-Path $deleteC)) "real prune kept unprotected export"
 Assert (Test-Path $keepLatestMd) "real prune removed latest-protected report"
 Assert (Test-Path $keepChampionMd) "real prune removed champion-protected report"
+
+$badDb = Invoke-Captured $exe @("db") @(2)
+Assert ($badDb.Output -match "db requires an action") "bad-db error text changed"
+$dbInit = Invoke-Captured $exe @("db", "init")
+Assert ($dbInit.Output -match "DB initialized") "db init output missing completion"
+Assert (Test-Path $dbPath) "db init did not create database"
+$dbImport = Invoke-Captured $exe @("db", "import-champions")
+Assert ($dbImport.Output -match "DB import complete") "db import output missing completion"
+Assert ($dbImport.Output -match "imported\s+[1-9]") "db import did not import champions"
+$dbLatest = Invoke-Captured $exe @("db", "add-latest")
+Assert ($dbLatest.Output -match "DB latest added") "db add-latest output missing completion"
+$dbTop = Invoke-Captured $exe @("db", "top", "--limit", "5")
+Assert ($dbTop.Output -match "Hash Forge best hash database") "db top output missing title"
+Assert ($dbTop.Output -match "DB top complete") "db top output missing completion"
+Assert-DbTopReport
+$dbVerify = Invoke-Captured $exe @("db", "verify")
+Assert ($dbVerify.Output -match "stale scores\s+0") "db verify found stale scores before salt"
+Assert ($dbVerify.Output -match "invalid records\s+0") "db verify found invalid records"
+
+$env:HASH_FORGE_SCORE_FINGERPRINT_SALT = "strict-db-test"
+$saltedDbTop = Invoke-Captured $exe @("db", "top", "--limit", "5")
+Assert ($saltedDbTop.Output -match "rescored\s+[1-9]") "salted db top did not rescore stale records"
+Remove-Item Env:\HASH_FORGE_SCORE_FINGERPRINT_SALT
+$restoredDb = Invoke-Captured $exe @("db", "rescore")
+Assert ($restoredDb.Output -match "rescored\s+[1-9]") "restored db rescore did not refresh stale records"
+$restoredVerify = Invoke-Captured $exe @("db", "verify")
+Assert ($restoredVerify.Output -match "stale scores\s+0") "db verify found stale scores after restore"
 
 Compile-BestC
 

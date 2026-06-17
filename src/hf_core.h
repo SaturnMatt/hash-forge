@@ -351,6 +351,11 @@ typedef struct PruneOptions {
     int yes;
 } PruneOptions;
 
+typedef struct DbOptions {
+    char action[32];
+    uint32_t limit;
+} DbOptions;
+
 typedef struct CompareOptions {
     uint64_t seed;
     uint64_t generations;
@@ -486,6 +491,7 @@ int command_compare(const CompareOptions *options);
 int command_history(const HistoryOptions *options);
 int command_artifacts(const ArtifactOptions *options);
 int command_prune(const PruneOptions *options);
+int command_db(const DbOptions *options);
 int command_policy(const PolicyOptions *options);
 int candidate_is_valid(const Candidate *candidate);
 int ensure_out_dir(void);

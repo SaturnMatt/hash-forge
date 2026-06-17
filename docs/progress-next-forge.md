@@ -265,3 +265,153 @@ are zero.
 Commit:
 
 - `a1c27c4 Add artifact hygiene commands`
+
+## Milestone 8: Best hash database
+
+Status: in progress.
+
+Intended files:
+
+- `src/hf_core.h`
+- `src/hash_forge.c`
+- `src/hf_report.c`
+- `src/hf_db.c`
+- `build.ps1`
+- `scripts/test.ps1`
+- `README.md`
+- `SPEC.md`
+- `docs/progress-next-forge.md`
+
+Plan:
+
+- Add `hash-forge db init/import-champions/add-latest/top/rescore/verify`.
+- Use a small plain-text local database at `out/hash-forge.db` instead of
+  SQLite for this milestone, avoiding a large vendored dependency.
+- Store VM instructions, candidate metadata, scores, audit data, report/export
+  paths, and scoring fingerprint.
+- Import existing champion flat files and keep the old champion workflow
+  compatible.
+- Add machine-readable instruction CSV lines to `out/best.txt` so `db
+  add-latest` can store VM instructions from the latest export.
+- Detect stale fingerprints and rescore before ranking.
+
+Risks:
+
+- The database must not silently rank stale scores as current.
+- `db add-latest` depends on the current `out/best.txt`; older files may not
+  have instruction CSV lines until a fresh run/export occurs.
+- Keep the database outside the hot loop and avoid coupling it to evolution.
+
+Verification plan:
+
+```txt
+.\build.ps1
+.\scripts\test.ps1
+git diff --check
+.\scripts\smoke.ps1
+```
+
+Experiment plan:
+
+```txt
+.\build\hash-forge.exe db init
+.\build\hash-forge.exe db import-champions
+.\build\hash-forge.exe db add-latest
+.\build\hash-forge.exe db top --limit 5
+.\build\hash-forge.exe db verify
+```
+
+What changed:
+
+- Added `hash-forge db` with actions:
+  - `init`
+  - `import-champions`
+  - `add-latest`
+  - `top --limit <n>`
+  - `rescore`
+  - `verify`
+- Added a tiny plain-text local database at `out/hash-forge.db`.
+- Added `out/db-top.md` leaderboard reporting.
+- Stored candidate ids, VM instructions, source, quality, scores, audit data,
+  report/export paths, run seed, timestamp, and scoring fingerprint.
+- Imported existing `out/champions/*.hfch` records through the existing champion
+  reader/rescore path.
+- Added machine-readable `instructions_csv` to `out/best.txt` so the latest
+  exported candidate can be stored by VM instructions.
+- Added stale fingerprint detection and rescoring before `db top` ranking.
+- Added strict tests for init, import, latest add, top report, verify, salted
+  stale rescore, and restored fingerprint rescore.
+- Updated README and SPEC.
+
+Verification result:
+
+```txt
+.\build.ps1
+pass
+
+.\scripts\test.ps1
+pass
+
+git diff --check
+pass, with existing CRLF normalization warnings only
+
+.\scripts\smoke.ps1
+pass
+```
+
+Experiment:
+
+```txt
+.\build\hash-forge.exe db init
+.\build\hash-forge.exe db import-champions
+.\build\hash-forge.exe db add-latest
+.\build\hash-forge.exe db top --limit 5
+.\build\hash-forge.exe db verify
+```
+
+Key metrics:
+
+```txt
+db_path=out/hash-forge.db
+db_records=4
+champion_records_imported=3
+latest_candidate_added=1
+current_fingerprint=0x008c501a1c726afe
+top_candidate=3fdbcc2a5466ce1c
+top_candidate_deep=5135554
+top_candidate_quick=367353
+top_candidate_flags=0x0
+db_verify_candidates=4
+db_verify_stale_scores=0
+db_verify_missing_artifacts=0
+db_verify_invalid_records=0
+```
+
+Fingerprint rescore proof:
+
+```txt
+HASH_FORGE_SCORE_FINGERPRINT_SALT=milestone8-exp .\build\hash-forge.exe db top --limit 3
+rescored=4
+salted_fingerprint=0x895e285466df0996
+
+.\build\hash-forge.exe db rescore
+rescored=4
+
+.\build\hash-forge.exe db verify
+stale_scores=0
+invalid_records=0
+```
+
+Interpretation:
+
+The database now turns the champion flat files and latest export into a durable
+searchable index. It is intentionally a small text store rather than SQLite so
+the project does not absorb a large dependency yet. The important correctness
+property is present: when the scoring fingerprint changes, `db top` notices
+stale rows, rescored all records before ranking, and stored current scores under
+the new fingerprint. Restoring the normal fingerprint also rescored all records
+and returned verification to zero stale scores.
+
+Commit:
+
+- pending
