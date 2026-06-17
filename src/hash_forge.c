@@ -122,9 +122,12 @@ typedef struct RunReport {
     uint64_t run_generation;
     uint64_t quick_candidates_evaluated;
     uint64_t deep_candidates_evaluated;
+    uint64_t duplicate_repairs;
+    uint64_t duplicate_random_replacements;
     double elapsed_seconds;
     const char *stop_reason;
     uint32_t threads;
+    uint32_t last_unique_candidates;
 } RunReport;
 
 typedef struct BenchOptions {
@@ -533,14 +536,28 @@ static int candidate_id_exists(const Candidate *candidates, uint32_t count, uint
     return 0;
 }
 
-static void ensure_unique_candidate(Candidate *candidate, const Candidate *existing, uint32_t existing_count, Rng *rng) {
+static uint32_t count_unique_candidate_ids(const Candidate *candidates, uint32_t count) {
+    uint32_t unique = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (!candidate_id_exists(candidates, i, candidates[i].id)) unique++;
+    }
+    return unique;
+}
+
+static int ensure_unique_candidate(Candidate *candidate, const Candidate *existing, uint32_t existing_count, Rng *rng) {
+    int changed = 0;
     for (uint32_t attempt = 0; attempt < 8 && candidate_id_exists(existing, existing_count, candidate->id); attempt++) {
         Candidate parent = *candidate;
         mutate_candidate(candidate, &parent, rng);
+        changed = 1;
     }
     if (candidate_id_exists(existing, existing_count, candidate->id)) {
-        random_candidate(candidate, rng);
+        for (uint32_t attempt = 0; attempt < 8 && candidate_id_exists(existing, existing_count, candidate->id); attempt++) {
+            random_candidate(candidate, rng);
+            changed = 2;
+        }
     }
+    return changed;
 }
 
 static int collision_add(ScoreScratch *scratch, uint64_t h) {
@@ -910,6 +927,14 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Total hash functions evaluated: `%llu`\n\n",
             (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
 
+    fprintf(md, "## Diversity telemetry\n\n");
+    fprintf(md, "- Unique candidates in last scored generation: `%u` of `%u`\n",
+            report->last_unique_candidates, POPULATION_SIZE);
+    fprintf(md, "- Duplicate candidate repairs: `%llu`\n",
+            (unsigned long long)report->duplicate_repairs);
+    fprintf(md, "- Fresh random duplicate replacements: `%llu`\n\n",
+            (unsigned long long)report->duplicate_random_replacements);
+
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
@@ -1153,6 +1178,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "deep_candidates_evaluated: %llu\n", (unsigned long long)report->deep_candidates_evaluated);
     fprintf(txt, "total_candidates_evaluated: %llu\n",
             (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+    fprintf(txt, "last_unique_candidates: %u\n", report->last_unique_candidates);
+    fprintf(txt, "duplicate_repairs: %llu\n", (unsigned long long)report->duplicate_repairs);
+    fprintf(txt, "duplicate_random_replacements: %llu\n", (unsigned long long)report->duplicate_random_replacements);
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
     uint32_t op_counts[OP_COUNT];
@@ -1172,14 +1200,17 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
                 candidate->fail_flags, report->elapsed_seconds, report->stop_reason, quality_name(options->quality), report->threads,
                 (unsigned long long)report->quick_candidates_evaluated,
                 (unsigned long long)report->deep_candidates_evaluated,
-                (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+                (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated),
+                report->last_unique_candidates,
+                (unsigned long long)report->duplicate_repairs,
+                (unsigned long long)report->duplicate_random_replacements);
         fclose(summary);
     }
 
@@ -1498,7 +1529,8 @@ static int run_generation_self_tests(void) {
         Candidate duplicate;
         random_candidate(&existing[0], &a_rng);
         duplicate = existing[0];
-        ensure_unique_candidate(&duplicate, existing, 1, &a_rng);
+        int uniqueness = ensure_unique_candidate(&duplicate, existing, 1, &a_rng);
+        if (!self_check(uniqueness != 0, "unique repair reports duplicate change")) return 0;
         if (!self_check(candidate_is_valid(&duplicate), "unique repair candidate validity")) return 0;
         if (!self_check(duplicate.id != existing[0].id, "unique repair changes duplicate id")) return 0;
     }
@@ -1839,6 +1871,10 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sdeep evals%s         %llu\n", c_dim(), c_reset(), (unsigned long long)report->deep_candidates_evaluated);
     printf("  %stotal evaluated%s    %llu candidate hash functions\n", c_dim(), c_reset(),
            (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+    printf("  %sunique last gen%s     %u/%u candidates\n", c_dim(), c_reset(), report->last_unique_candidates, POPULATION_SIZE);
+    printf("  %sduplicate repairs%s   %llu (%llu fresh replacements)\n", c_dim(), c_reset(),
+           (unsigned long long)report->duplicate_repairs,
+           (unsigned long long)report->duplicate_random_replacements);
     printf("  %sbest id%s            %s%016llx%s\n", c_dim(), c_reset(), c_cyan(), (unsigned long long)candidate->id, c_reset());
     printf("  %sbest quick%s         %lld\n", c_dim(), c_reset(), (long long)candidate->quick_score);
     printf("  %sbest deep%s          %lld\n", c_dim(), c_reset(), (long long)candidate->deep_score);
@@ -1924,6 +1960,9 @@ static int command_run(const RunOptions *options) {
     best_seen.deep_score = INT64_MIN;
     uint64_t quick_candidates_evaluated = 0;
     uint64_t deep_candidates_evaluated = 0;
+    uint64_t duplicate_repairs = 0;
+    uint64_t duplicate_random_replacements = 0;
+    uint32_t last_unique_candidates = POPULATION_SIZE;
     uint32_t score_threads = options->auto_threads
         ? choose_auto_thread_count(population, options->seed)
         : clamp_thread_count(options->threads, POPULATION_SIZE);
@@ -1955,6 +1994,7 @@ static int command_run(const RunOptions *options) {
         }
         quick_candidates_evaluated += POPULATION_SIZE;
         qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
+        last_unique_candidates = count_unique_candidate_ids(population, POPULATION_SIZE);
 
         int deep_generation = generation % deep_every == 0 || generation == 1 || generation_limit_reached(options, generation);
         if (deep_generation) {
@@ -1988,7 +2028,9 @@ static int command_run(const RunOptions *options) {
 
         for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
             next[i] = population[i];
-            ensure_unique_candidate(&next[i], next, i, &rng);
+            int uniqueness = ensure_unique_candidate(&next[i], next, i, &rng);
+            if (uniqueness) duplicate_repairs++;
+            if (uniqueness == 2) duplicate_random_replacements++;
         }
         uint32_t immigrant_start = POPULATION_SIZE > IMMIGRANT_COUNT ? POPULATION_SIZE - IMMIGRANT_COUNT : SURVIVOR_COUNT;
         if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
@@ -1999,19 +2041,25 @@ static int command_run(const RunOptions *options) {
             uint32_t parent_index = r / SURVIVOR_COUNT;
             if (parent_index >= SURVIVOR_COUNT) parent_index = SURVIVOR_COUNT - 1;
             mutate_candidate(&next[i], &population[parent_index], &rng);
-            ensure_unique_candidate(&next[i], next, i, &rng);
+            int uniqueness = ensure_unique_candidate(&next[i], next, i, &rng);
+            if (uniqueness) duplicate_repairs++;
+            if (uniqueness == 2) duplicate_random_replacements++;
         }
         for (uint32_t i = crossover_start; i < immigrant_start; i++) {
             uint32_t a = rng_range(&rng, SURVIVOR_COUNT);
             uint32_t b = rng_range(&rng, SURVIVOR_COUNT);
             crossover_candidate(&next[i], &population[a], &population[b], &rng);
-            ensure_unique_candidate(&next[i], next, i, &rng);
+            int uniqueness = ensure_unique_candidate(&next[i], next, i, &rng);
+            if (uniqueness) duplicate_repairs++;
+            if (uniqueness == 2) duplicate_random_replacements++;
         }
         for (uint32_t i = immigrant_start; i < POPULATION_SIZE; i++) {
             random_candidate(&next[i], &rng);
             next[i].generation = (uint32_t)generation;
             next[i].id = candidate_id(&next[i]);
-            ensure_unique_candidate(&next[i], next, i, &rng);
+            int uniqueness = ensure_unique_candidate(&next[i], next, i, &rng);
+            if (uniqueness) duplicate_repairs++;
+            if (uniqueness == 2) duplicate_random_replacements++;
         }
 
         Candidate *tmp = population;
@@ -2033,9 +2081,12 @@ static int command_run(const RunOptions *options) {
         generation,
         quick_candidates_evaluated,
         deep_candidates_evaluated,
+        duplicate_repairs,
+        duplicate_random_replacements,
         elapsed,
         stop_reason_for(options, generation, elapsed),
-        score_threads
+        score_threads,
+        last_unique_candidates
     };
 
     int exported = export_best(&best_seen, options, &report);

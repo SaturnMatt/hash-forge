@@ -362,7 +362,9 @@ so tests can compile and run the exported C against VM-derived expected outputs.
 `report.md` should be the full human-readable report for the completed run,
 including quick, deep, and total candidate hash functions evaluated, decoded
 fail flags, a quick/deep score breakdown, a final multi-seed audit, plus a
-best-candidate operator histogram and baseline comparison scores.
+best-candidate operator histogram and baseline comparison scores. It should
+also include diversity telemetry: final scored-generation uniqueness, duplicate
+repairs, and fresh random replacements.
 The latest report remains at `out/report.md`; completed runs should also archive
 a copy under `out/runs/`, with `out/latest_report_path.txt` pointing to it.
 The latest export remains at `out/best.c`; completed runs should also archive a

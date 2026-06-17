@@ -90,6 +90,9 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
     Assert ($report -match [regex]::Escape("- Total hash functions evaluated: ``$($summary.TotalCandidates)``")) "report missing total evaluated"
+    Assert ($report -match "Diversity telemetry") "report missing diversity telemetry"
+    Assert ($report -match "Unique candidates in last scored generation") "report missing unique candidate count"
+    Assert ($report -match "Duplicate candidate repairs") "report missing duplicate repair count"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)
     Assert ($report -match [regex]::Escape("- ID: ``$hexId``")) "report missing best id"
     Assert ($report -match "Quick score") "report missing quick score"
