@@ -10,6 +10,7 @@ $benchPath = Join-Path $root "out\bench.md"
 $comparePath = Join-Path $root "out\compare.md"
 $historyMdPath = Join-Path $root "out\history.md"
 $bestCPath = Join-Path $root "out\best.c"
+$bestTxtPath = Join-Path $root "out\best.txt"
 $latestReportPath = Join-Path $root "out\latest_report_path.txt"
 $latestExportPath = Join-Path $root "out\latest_export_path.txt"
 $historyPath = Join-Path $root "out\history.csv"
@@ -146,6 +147,9 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     $summary = Read-RunSummary
     Assert-ReportContains $summary
     Assert (Test-Path $bestCPath) "missing out\best.c"
+    Assert (Test-Path $bestTxtPath) "missing out\best.txt"
+    $bestTxt = Get-Content $bestTxtPath -Raw
+    Assert ($bestTxt -match "exported_instruction_count") "best.txt missing exported instruction count"
     $summary
 }
 

@@ -101,7 +101,8 @@ out\bench.md
 out\compare.md
 ```
 
-`out\best.c` is standalone C containing the exported winner.
+`out\best.c` is standalone C containing the exported winner. Export removes
+instructions that cannot contribute to the returned `hash`.
 Define `HASH_FORGE_BEST_TEST_MAIN` when compiling it to build a tiny vector
 self-test that verifies the exported C still matches the VM outputs used at
 export time.

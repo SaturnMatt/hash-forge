@@ -448,6 +448,31 @@ static void finalize_candidate(Candidate *candidate, Rng *rng) {
     candidate->deep_score = INT64_MIN;
 }
 
+static void prune_candidate_for_export(const Candidate *candidate, Candidate *out) {
+    uint8_t keep[MAX_INSTRUCTIONS];
+    uint32_t live = 1u << 2;
+    memset(keep, 0, sizeof(keep));
+
+    for (uint32_t i = candidate->instruction_count; i > 0; i--) {
+        const Instruction *ins = &candidate->instructions[i - 1];
+        uint32_t dst_bit = 1u << ins->dst;
+        if ((live & dst_bit) == 0) continue;
+        keep[i - 1] = 1;
+        live &= ~dst_bit;
+        if (ins->op != OP_MOV) live |= dst_bit;
+        if (ins->operand_kind == OPERAND_REG) live |= 1u << ins->operand_reg;
+    }
+
+    *out = *candidate;
+    out->instruction_count = 0;
+    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
+        if (keep[i]) {
+            out->instructions[out->instruction_count++] = candidate->instructions[i];
+        }
+    }
+    out->id = candidate_id(out);
+}
+
 static uint32_t fail_flag_count(uint32_t flags) {
     uint32_t count = 0;
     while (flags) {
@@ -1211,6 +1236,9 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
 
 static int export_best(const Candidate *candidate, const RunOptions *options, const RunReport *report) {
     ensure_out_dir();
+    Candidate exported_candidate;
+    prune_candidate_for_export(candidate, &exported_candidate);
+
     FILE *c = fopen("out/best.c", "wb");
     if (!c) {
         fprintf(stderr, "failed to open out/best.c\n");
@@ -1228,8 +1256,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(c, "    uint64_t hash = 0;\n");
     fprintf(c, "    uint64_t a = 0;\n");
     fprintf(c, "    uint64_t b = 0;\n\n");
-    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
-        print_instruction(c, &candidate->instructions[i], 1);
+    for (uint32_t i = 0; i < exported_candidate.instruction_count; i++) {
+        print_instruction(c, &exported_candidate.instructions[i], 1);
     }
     fprintf(c, "\n    return hash;\n}\n");
     fprintf(c, "\n#ifdef HASH_FORGE_BEST_TEST_MAIN\n");
@@ -1309,6 +1337,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "starter_candidates: %u\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(txt, "stagnation_refresh_enabled: %s\n", options->no_refresh ? "no" : "yes");
     fprintf(txt, "threads: %u\n", report->threads);
+    fprintf(txt, "exported_instruction_count: %u\n", exported_candidate.instruction_count);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
     uint32_t op_counts[OP_COUNT];
     count_ops(candidate, op_counts);
@@ -1773,6 +1802,23 @@ static int run_generation_self_tests(void) {
         finalize_candidate(&no_hash, &final_rng);
         if (!self_check(writes_hash(&no_hash), "finalize repairs missing hash write")) return 0;
         if (!self_check(candidate_is_valid(&no_hash), "finalized no-hash candidate remains valid")) return 0;
+
+        Candidate export_source;
+        Candidate export_pruned;
+        memset(&export_source, 0, sizeof(export_source));
+        export_source.instruction_count = 7;
+        export_source.instructions[0] = (Instruction){ OP_MOV, 3, OPERAND_REG, 0, 1, 0 };
+        export_source.instructions[1] = (Instruction){ OP_XOR, 3, OPERAND_REG, 1, 1, 0 };
+        export_source.instructions[2] = (Instruction){ OP_MUL, 3, OPERAND_CONST, 0, 1, 0x9e3779b97f4a7c15ull };
+        export_source.instructions[3] = (Instruction){ OP_MOV, 2, OPERAND_REG, 3, 1, 0 };
+        export_source.instructions[4] = (Instruction){ OP_XOR, 4, OPERAND_CONST, 0, 1, 0xd1b54a32d192ed03ull };
+        export_source.instructions[5] = (Instruction){ OP_MUL, 4, OPERAND_CONST, 0, 1, 0xbf58476d1ce4e5b9ull };
+        export_source.instructions[6] = (Instruction){ OP_ADD, 4, OPERAND_REG, 3, 1, 0 };
+        export_source.id = candidate_id(&export_source);
+        prune_candidate_for_export(&export_source, &export_pruned);
+        if (!self_check(export_pruned.instruction_count == 4, "export pruning removes dead instructions")) return 0;
+        if (!self_check(eval_candidate(&export_source, 123, 456) == eval_candidate(&export_pruned, 123, 456),
+                        "export pruning preserves output")) return 0;
     }
 
     printf("generation tests: pass\n");

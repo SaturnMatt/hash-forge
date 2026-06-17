@@ -377,6 +377,8 @@ out/compare.md
 ```
 
 `best.c` should be a standalone exported C function, independent of the VM.
+Export should liveness-prune instructions that cannot contribute to the final
+returned `hash`.
 It may include an optional `HASH_FORGE_BEST_TEST_MAIN` vector-test entry point
 so tests can compile and run the exported C against VM-derived expected outputs.
 `report.md` should be the full human-readable report for the completed run,
