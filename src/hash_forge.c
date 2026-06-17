@@ -35,6 +35,9 @@
 #define MAX_BENCH_THREAD_OPTIONS 16
 #define MAX_HISTORY_ROWS 4096
 #define MAX_COMPARE_SEEDS 64
+#define MAX_CHAMPIONS 128
+#define MAX_CHAMPION_STARTERS 8
+#define CHAMPION_FINGERPRINT_SEED 123ull
 
 #define FAIL_ZERO       0x01u
 #define FAIL_COLLISION  0x02u
@@ -67,6 +70,12 @@ typedef enum QualityMode {
     QUALITY_DEEP
 } QualityMode;
 
+typedef enum CandidateSource {
+    SOURCE_RANDOM,
+    SOURCE_STARTER,
+    SOURCE_CHAMPION
+} CandidateSource;
+
 typedef struct Rng {
     uint64_t state;
 } Rng;
@@ -90,6 +99,7 @@ typedef struct Candidate {
     int64_t deep_score;
     uint32_t fail_flags;
     uint32_t speed_hint;
+    uint8_t source;
 } Candidate;
 
 typedef struct ScoreScratch {
@@ -134,6 +144,7 @@ typedef struct RunOptions {
     int auto_threads;
     int no_starter;
     int no_refresh;
+    int no_champions;
 } RunOptions;
 
 typedef struct RunReport {
@@ -148,6 +159,7 @@ typedef struct RunReport {
     const char *stop_reason;
     uint32_t threads;
     uint32_t last_unique_candidates;
+    uint32_t champion_starters_loaded;
 } RunReport;
 
 typedef struct BenchOptions {
@@ -248,6 +260,20 @@ typedef struct HistoryRow {
     uint32_t starter_candidates;
     uint32_t refresh_enabled;
 } HistoryRow;
+
+typedef struct ChampionRecord {
+    Candidate candidate;
+    uint64_t seed;
+    long long unix_time;
+    char quality[16];
+    char source_report[260];
+    uint64_t fingerprint;
+    int64_t audit_worst;
+    int64_t audit_average;
+    uint32_t audit_flags;
+    char path[260];
+    int malformed;
+} ChampionRecord;
 
 typedef struct ScoreTask {
     Candidate *candidates;
@@ -370,6 +396,15 @@ static const char *quality_name(QualityMode quality) {
     case QUALITY_DEEP: return "deep";
     case QUALITY_NORMAL:
     default: return "normal";
+    }
+}
+
+static const char *candidate_source_name(uint8_t source) {
+    switch (source) {
+    case SOURCE_STARTER: return "starter";
+    case SOURCE_CHAMPION: return "champion";
+    case SOURCE_RANDOM:
+    default: return "random";
     }
 }
 
@@ -509,6 +544,8 @@ static const BaselineCase baseline_cases[] = {
     }
 };
 
+static ScoreResult score_baseline_case(const BaselineCase *baseline, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality);
+
 static uint64_t candidate_id(const Candidate *candidate) {
     uint64_t h = 1469598103934665603ull;
     h ^= candidate->instruction_count;
@@ -522,6 +559,34 @@ static uint64_t candidate_id(const Candidate *candidate) {
         h ^= ins->constant;
         h *= 1099511628211ull;
     }
+    return h;
+}
+
+static uint64_t hash_u64_step(uint64_t h, uint64_t x) {
+    h ^= x;
+    h *= 1099511628211ull;
+    return h;
+}
+
+static uint64_t current_scoring_fingerprint(void) {
+    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
+    uint64_t h = 1469598103934665603ull;
+    const char *salt = getenv("HASH_FORGE_SCORE_FINGERPRINT_SALT");
+    if (!scratch) return 0;
+    h = hash_u64_step(h, CHAMPION_FINGERPRINT_SEED);
+    h = hash_u64_step(h, QUALITY_DEEP);
+    for (uint32_t i = 0; i < sizeof(baseline_cases) / sizeof(baseline_cases[0]); i++) {
+        ScoreResult score = score_baseline_case(&baseline_cases[i], scratch, CHAMPION_FINGERPRINT_SEED, 1, QUALITY_DEEP);
+        h = hash_u64_step(h, baseline_cases[i].id);
+        h = hash_u64_step(h, (uint64_t)score.score);
+        h = hash_u64_step(h, score.fail_flags);
+    }
+    if (salt) {
+        while (*salt) {
+            h = hash_u64_step(h, (unsigned char)*salt++);
+        }
+    }
+    free(scratch);
     return h;
 }
 
@@ -647,6 +712,7 @@ static void random_instruction(Instruction *ins, Rng *rng, int force_hash_bias) 
 
 static void random_candidate(Candidate *candidate, Rng *rng) {
     memset(candidate, 0, sizeof(*candidate));
+    candidate->source = SOURCE_RANDOM;
     candidate->instruction_count = MIN_PROGRAM_LEN + rng_range(rng, MAX_PROGRAM_LEN - MIN_PROGRAM_LEN + 1);
     for (uint32_t i = 0; i < candidate->instruction_count; i++) {
         random_instruction(&candidate->instructions[i], rng, i == 0 || rng_range(rng, 3) == 0);
@@ -703,6 +769,8 @@ static void mutate_candidate(Candidate *child, const Candidate *parent, Rng *rng
 
 static void crossover_candidate(Candidate *child, const Candidate *a, const Candidate *b, Rng *rng) {
     memset(child, 0, sizeof(*child));
+    child->source = (a->source == SOURCE_CHAMPION || b->source == SOURCE_CHAMPION) ? SOURCE_CHAMPION :
+        ((a->source == SOURCE_STARTER || b->source == SOURCE_STARTER) ? SOURCE_STARTER : SOURCE_RANDOM);
     uint32_t prefix = 1 + rng_range(rng, a->instruction_count);
     if (prefix > MAX_PROGRAM_LEN) prefix = MAX_PROGRAM_LEN;
 
@@ -1106,6 +1174,14 @@ static int ensure_out_runs_dir(void) {
     return 1;
 }
 
+static int ensure_champions_dir(void) {
+    ensure_out_dir();
+    if (HF_MKDIR("out/champions") != 0) {
+        /* Existing directory is fine; file creation below will catch real errors. */
+    }
+    return 1;
+}
+
 static int copy_file_bytes(const char *from_path, const char *to_path) {
     FILE *from = fopen(from_path, "rb");
     if (!from) return 0;
@@ -1127,6 +1203,236 @@ static int copy_file_bytes(const char *from_path, const char *to_path) {
     fclose(from);
     fclose(to);
     return ok;
+}
+
+static int parse_champion_instruction(const char *text, Instruction *ins) {
+    unsigned op = 0, dst = 0, kind = 0, reg = 0, shift = 0;
+    unsigned long long constant = 0;
+    if (sscanf(text, "%u,%u,%u,%u,%u,%llx", &op, &dst, &kind, &reg, &shift, &constant) != 6) {
+        return 0;
+    }
+    if (op >= OP_COUNT || dst >= REG_COUNT || kind > OPERAND_CONST || reg >= REG_COUNT || shift >= 64) {
+        return 0;
+    }
+    ins->op = (uint8_t)op;
+    ins->dst = (uint8_t)dst;
+    ins->operand_kind = (uint8_t)kind;
+    ins->operand_reg = (uint8_t)reg;
+    ins->shift = (uint8_t)shift;
+    ins->constant = (uint64_t)constant;
+    return 1;
+}
+
+static int read_champion_record(const char *path, ChampionRecord *record) {
+    FILE *file = fopen(path, "rb");
+    char line[512];
+    uint32_t seen_instructions = 0;
+    memset(record, 0, sizeof(*record));
+    record->candidate.deep_score = INT64_MIN;
+    record->candidate.source = SOURCE_CHAMPION;
+    strncpy(record->path, path, sizeof(record->path) - 1);
+    if (!file) return 0;
+
+    while (fgets(line, sizeof(line), file)) {
+        char *nl = strpbrk(line, "\r\n");
+        if (nl) *nl = '\0';
+        if (strncmp(line, "id=", 3) == 0) {
+            record->candidate.id = (uint64_t)strtoull(line + 3, NULL, 0);
+        } else if (strncmp(line, "parent_id=", 10) == 0) {
+            record->candidate.parent_id = (uint64_t)strtoull(line + 10, NULL, 0);
+        } else if (strncmp(line, "generation=", 11) == 0) {
+            record->candidate.generation = (uint32_t)strtoul(line + 11, NULL, 0);
+        } else if (strncmp(line, "instruction_count=", 18) == 0) {
+            record->candidate.instruction_count = (uint32_t)strtoul(line + 18, NULL, 0);
+        } else if (strncmp(line, "quick_score=", 12) == 0) {
+            record->candidate.quick_score = (int64_t)_strtoi64(line + 12, NULL, 0);
+        } else if (strncmp(line, "deep_score=", 11) == 0) {
+            record->candidate.deep_score = (int64_t)_strtoi64(line + 11, NULL, 0);
+        } else if (strncmp(line, "fail_flags=", 11) == 0) {
+            record->candidate.fail_flags = (uint32_t)strtoul(line + 11, NULL, 0);
+        } else if (strncmp(line, "seed=", 5) == 0) {
+            record->seed = (uint64_t)strtoull(line + 5, NULL, 0);
+        } else if (strncmp(line, "timestamp=", 10) == 0) {
+            record->unix_time = _strtoi64(line + 10, NULL, 0);
+        } else if (strncmp(line, "quality=", 8) == 0) {
+            strncpy(record->quality, line + 8, sizeof(record->quality) - 1);
+        } else if (strncmp(line, "source_report=", 14) == 0) {
+            strncpy(record->source_report, line + 14, sizeof(record->source_report) - 1);
+        } else if (strncmp(line, "fingerprint=", 12) == 0) {
+            record->fingerprint = (uint64_t)strtoull(line + 12, NULL, 0);
+        } else if (strncmp(line, "audit_worst=", 12) == 0) {
+            record->audit_worst = (int64_t)_strtoi64(line + 12, NULL, 0);
+        } else if (strncmp(line, "audit_average=", 14) == 0) {
+            record->audit_average = (int64_t)_strtoi64(line + 14, NULL, 0);
+        } else if (strncmp(line, "audit_flags=", 12) == 0) {
+            record->audit_flags = (uint32_t)strtoul(line + 12, NULL, 0);
+        } else if (strncmp(line, "ins=", 4) == 0) {
+            if (seen_instructions >= MAX_INSTRUCTIONS ||
+                !parse_champion_instruction(line + 4, &record->candidate.instructions[seen_instructions])) {
+                record->malformed = 1;
+            } else {
+                seen_instructions++;
+            }
+        }
+    }
+    fclose(file);
+
+    if (record->candidate.instruction_count == 0) {
+        record->candidate.instruction_count = seen_instructions;
+    }
+    if (record->candidate.instruction_count != seen_instructions ||
+        record->candidate.instruction_count > MAX_INSTRUCTIONS ||
+        record->candidate.id != candidate_id(&record->candidate)) {
+        record->malformed = 1;
+    }
+    return !record->malformed;
+}
+
+static void audit_candidate_for_record(const Candidate *candidate, uint64_t seed, QualityMode quality,
+                                       int64_t *worst, int64_t *average, uint32_t *flags) {
+    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
+    const uint32_t audit_count = 5;
+    int64_t total = 0;
+    *worst = INT64_MAX;
+    *average = 0;
+    *flags = 0;
+    if (!scratch) {
+        *worst = 0;
+        return;
+    }
+    for (uint32_t i = 0; i < audit_count; i++) {
+        uint64_t audit_seed = mix_seed(seed, candidate->id, 1000u + i);
+        ScoreResult audit = score_candidate(candidate, scratch, audit_seed, 1, quality);
+        if (audit.score < *worst) *worst = audit.score;
+        total += audit.score;
+        *flags |= audit.fail_flags;
+    }
+    *average = total / (int64_t)audit_count;
+    free(scratch);
+}
+
+static int write_champion_record(const ChampionRecord *record) {
+    FILE *file = fopen(record->path, "wb");
+    if (!file) return 0;
+    fprintf(file, "version=1\n");
+    fprintf(file, "id=%llu\n", (unsigned long long)record->candidate.id);
+    fprintf(file, "parent_id=%llu\n", (unsigned long long)record->candidate.parent_id);
+    fprintf(file, "generation=%u\n", record->candidate.generation);
+    fprintf(file, "instruction_count=%u\n", record->candidate.instruction_count);
+    fprintf(file, "quick_score=%lld\n", (long long)record->candidate.quick_score);
+    fprintf(file, "deep_score=%lld\n", (long long)record->candidate.deep_score);
+    fprintf(file, "fail_flags=0x%x\n", record->candidate.fail_flags);
+    fprintf(file, "seed=%llu\n", (unsigned long long)record->seed);
+    fprintf(file, "timestamp=%lld\n", record->unix_time);
+    fprintf(file, "quality=%s\n", record->quality[0] ? record->quality : "deep");
+    fprintf(file, "source_report=%s\n", record->source_report);
+    fprintf(file, "fingerprint=0x%llx\n", (unsigned long long)record->fingerprint);
+    fprintf(file, "audit_worst=%lld\n", (long long)record->audit_worst);
+    fprintf(file, "audit_average=%lld\n", (long long)record->audit_average);
+    fprintf(file, "audit_flags=0x%x\n", record->audit_flags);
+    fprintf(file, "source=%s\n", candidate_source_name(record->candidate.source));
+    for (uint32_t i = 0; i < record->candidate.instruction_count; i++) {
+        const Instruction *ins = &record->candidate.instructions[i];
+        fprintf(file, "ins=%u,%u,%u,%u,%u,%llx\n",
+                ins->op, ins->dst, ins->operand_kind, ins->operand_reg,
+                ins->shift, (unsigned long long)ins->constant);
+    }
+    fclose(file);
+    return 1;
+}
+
+static int compare_champion_records(const void *a_ptr, const void *b_ptr) {
+    const ChampionRecord *a = (const ChampionRecord *)a_ptr;
+    const ChampionRecord *b = (const ChampionRecord *)b_ptr;
+    return compare_candidates(&a->candidate, &b->candidate);
+}
+
+static int rescore_champion_record(ChampionRecord *record, uint64_t fingerprint) {
+    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
+    if (!scratch) return 0;
+    ScoreResult quick = score_candidate(&record->candidate, scratch, record->seed, 0, QUALITY_DEEP);
+    ScoreResult deep = score_candidate(&record->candidate, scratch, record->seed, 1, QUALITY_DEEP);
+    record->candidate.quick_score = quick.score;
+    record->candidate.deep_score = deep.score;
+    record->candidate.fail_flags = deep.fail_flags;
+    record->fingerprint = fingerprint;
+    audit_candidate_for_record(&record->candidate, record->seed, QUALITY_DEEP,
+                               &record->audit_worst, &record->audit_average, &record->audit_flags);
+    free(scratch);
+    return write_champion_record(record);
+}
+
+static uint32_t load_champion_records(ChampionRecord *records, uint32_t capacity, uint64_t fingerprint, uint32_t *rescored) {
+    uint32_t count = 0;
+    if (rescored) *rescored = 0;
+    ensure_champions_dir();
+#ifdef _WIN32
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA("out/champions/*.hfch", &data);
+    if (find == INVALID_HANDLE_VALUE) return 0;
+    do {
+        char path[260];
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        snprintf(path, sizeof(path), "out/champions/%s", data.cFileName);
+        ChampionRecord record;
+        if (!read_champion_record(path, &record)) continue;
+        if (record.fingerprint != fingerprint) {
+            if (rescore_champion_record(&record, fingerprint) && rescored) {
+                (*rescored)++;
+            }
+        }
+        if (count < capacity) {
+            records[count++] = record;
+        }
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+#else
+    (void)records;
+    (void)capacity;
+    (void)fingerprint;
+#endif
+    qsort(records, count, sizeof(records[0]), compare_champion_records);
+    return count;
+}
+
+static uint32_t load_champion_starters(Candidate *population, Rng *rng, uint32_t start_index) {
+    ChampionRecord records[MAX_CHAMPIONS];
+    uint64_t fingerprint = current_scoring_fingerprint();
+    uint32_t rescored = 0;
+    uint32_t count = load_champion_records(records, MAX_CHAMPIONS, fingerprint, &rescored);
+    uint32_t loaded = 0;
+    (void)rescored;
+    for (uint32_t i = 0; i < count && loaded < MAX_CHAMPION_STARTERS; i++) {
+        if (records[i].candidate.fail_flags != 0 || records[i].candidate.deep_score == INT64_MIN) continue;
+        uint32_t at = start_index + loaded;
+        if (at >= POPULATION_SIZE) break;
+        population[at] = records[i].candidate;
+        population[at].source = SOURCE_CHAMPION;
+        population[at].deep_score = INT64_MIN;
+        ensure_unique_candidate(&population[at], population, at, rng);
+        loaded++;
+    }
+    return loaded;
+}
+
+static int save_champion_candidate(const Candidate *candidate, const RunOptions *options, const RunReport *report, const char *source_report) {
+    ChampionRecord record;
+    if (candidate->fail_flags != 0 || candidate->deep_score == INT64_MIN || candidate->deep_score <= 0) {
+        return 0;
+    }
+    ensure_champions_dir();
+    memset(&record, 0, sizeof(record));
+    record.candidate = *candidate;
+    record.seed = options->seed;
+    record.unix_time = (long long)time(NULL);
+    strncpy(record.quality, quality_name(options->quality), sizeof(record.quality) - 1);
+    if (source_report) strncpy(record.source_report, source_report, sizeof(record.source_report) - 1);
+    record.fingerprint = current_scoring_fingerprint();
+    audit_candidate_for_record(candidate, options->seed, options->quality,
+                               &record.audit_worst, &record.audit_average, &record.audit_flags);
+    snprintf(record.path, sizeof(record.path), "out/champions/%016llx.hfch", (unsigned long long)candidate->id);
+    (void)report;
+    return write_champion_record(&record);
 }
 
 static void print_fail_flags(FILE *out, uint32_t flags) {
@@ -1180,7 +1486,8 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Elapsed seconds: `%.3f`\n", report->elapsed_seconds);
     fprintf(md, "- Stop reason: `%s`\n", report->stop_reason);
     fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
-    fprintf(md, "- Scoring threads: `%u`\n\n", report->threads);
+    fprintf(md, "- Scoring threads: `%u`\n", report->threads);
+    fprintf(md, "- Champion starters loaded: `%u`\n\n", report->champion_starters_loaded);
 
     fprintf(md, "## Evaluation totals\n\n");
     fprintf(md, "- Quick candidates evaluated: `%llu`\n", (unsigned long long)report->quick_candidates_evaluated);
@@ -1206,6 +1513,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Compact starter candidates: `%u`\n", options->no_starter ? 0u : STARTER_COUNT);
+    fprintf(md, "- Champion starter candidates: `%u`\n", report->champion_starters_loaded);
     fprintf(md, "- Stagnation refresh window: `%u` generations\n", options->no_refresh ? 0u : STAGNATION_REFRESH_GENERATIONS);
     fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", options->no_refresh ? 0u : STAGNATION_IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
@@ -1218,6 +1526,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Parent ID: `%llx`\n", (unsigned long long)candidate->parent_id);
     fprintf(md, "- Candidate generation: `%u`\n", candidate->generation);
     fprintf(md, "- Instruction count: `%u`\n", candidate->instruction_count);
+    fprintf(md, "- Source ancestry: `%s`\n", candidate_source_name(candidate->source));
     fprintf(md, "- Quick score: `%lld`\n", (long long)candidate->quick_score);
     fprintf(md, "- Final deep score: `%lld`\n", (long long)candidate->deep_score);
     fprintf(md, "- Fail flags: `0x%x` (", candidate->fail_flags);
@@ -1364,6 +1673,8 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- `out/history.csv`: compact append-only run history\n");
     fprintf(md, "- `out/compare.md`: latest deterministic policy comparison report\n");
     fprintf(md, "- `out/baselines.md`: latest established-hash baseline report\n");
+    fprintf(md, "- `out/champions/*.hfch`: saved custom champion records\n");
+    fprintf(md, "- `out/champions.md`: latest champion leaderboard\n");
     fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
 
     fprintf(md, "## Interpretation note\n\n");
@@ -1475,6 +1786,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "adaptive_random_immigrants: %llu\n", (unsigned long long)report->adaptive_random_immigrants);
     fprintf(txt, "starter_candidates: %u\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(txt, "stagnation_refresh_enabled: %s\n", options->no_refresh ? "no" : "yes");
+    fprintf(txt, "champion_starters: %u\n", report->champion_starters_loaded);
+    fprintf(txt, "source: %s\n", candidate_source_name(candidate->source));
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "exported_instruction_count: %u\n", exported_candidate.instruction_count);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
@@ -1495,7 +1808,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s champion_starters=%u source=%s\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -1509,7 +1822,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)report->stagnation_refreshes,
                 (unsigned long long)report->adaptive_random_immigrants,
                 options->no_starter ? 0u : STARTER_COUNT,
-                options->no_refresh ? "no" : "yes");
+                options->no_refresh ? "no" : "yes",
+                report->champion_starters_loaded,
+                candidate_source_name(candidate->source));
         fclose(summary);
     }
 
@@ -1573,12 +1888,14 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
             fprintf(archive_note, "%s\n", archive_c_path);
             fclose(archive_note);
         }
+        save_champion_candidate(candidate, options, report, archive_report_path);
     }
     return wrote_latest && wrote_archive && copied_c_archive;
 }
 
 static void make_reasonable_baseline(Candidate *candidate) {
     memset(candidate, 0, sizeof(*candidate));
+    candidate->source = SOURCE_STARTER;
     candidate->instruction_count = 19;
     Instruction p[] = {
         { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
@@ -1608,6 +1925,7 @@ static void make_reasonable_baseline(Candidate *candidate) {
 
 static void make_compact_starter(Candidate *candidate) {
     memset(candidate, 0, sizeof(*candidate));
+    candidate->source = SOURCE_STARTER;
     candidate->instruction_count = 16;
     Instruction p[] = {
         { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
@@ -2208,6 +2526,7 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
            options->auto_threads ? " (auto)" : "");
     printf("  %spopulation%s   %u candidates, %u survivors, %u crossover, %u immigrants\n",
            c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, CROSSOVER_COUNT, IMMIGRANT_COUNT);
+    printf("  %schampions%s    %s\n", c_dim(), c_reset(), options->no_champions ? "disabled" : "enabled");
     printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
            c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
 }
@@ -2277,7 +2596,9 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sstagnation refresh%s  %llu (%llu extra immigrants)\n", c_dim(), c_reset(),
            (unsigned long long)report->stagnation_refreshes,
            (unsigned long long)report->adaptive_random_immigrants);
+    printf("  %schampion starters%s   %u\n", c_dim(), c_reset(), report->champion_starters_loaded);
     printf("  %sbest id%s            %s%016llx%s\n", c_dim(), c_reset(), c_cyan(), (unsigned long long)candidate->id, c_reset());
+    printf("  %sbest source%s        %s\n", c_dim(), c_reset(), candidate_source_name(candidate->source));
     printf("  %sbest quick%s         %lld\n", c_dim(), c_reset(), (long long)candidate->quick_score);
     printf("  %sbest deep%s          %lld\n", c_dim(), c_reset(), (long long)candidate->deep_score);
     printf("  %sbest flags%s         %s0x%x%s (", c_dim(), c_reset(), candidate->fail_flags ? c_yellow() : c_green(), candidate->fail_flags, c_reset());
@@ -2356,6 +2677,10 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
     }
     if (!options->no_starter) {
         seed_starter_population(population, &rng);
+    }
+    uint32_t champion_starters_loaded = 0;
+    if (!options->no_champions) {
+        champion_starters_loaded = load_champion_starters(population, &rng, options->no_starter ? 0u : STARTER_COUNT);
     }
 
     uint64_t generation = 0;
@@ -2508,7 +2833,8 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         elapsed,
         stop_reason_for(options, generation, elapsed),
         score_threads,
-        last_unique_candidates
+        last_unique_candidates,
+        champion_starters_loaded
     };
 
     if (best_out) *best_out = best_seen;
@@ -2954,6 +3280,64 @@ static int command_baselines(const BaselineOptions *options) {
     return wrote ? 0 : 1;
 }
 
+static int write_champions_report(const ChampionRecord *records, uint32_t count, uint32_t rescored, uint64_t fingerprint) {
+    ensure_out_dir();
+    FILE *md = fopen("out/champions.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/champions.md\n");
+        return 0;
+    }
+    fprintf(md, "# hash-forge champions\n\n");
+    fprintf(md, "- Champion records: `%u`\n", count);
+    fprintf(md, "- Rescored records: `%u`\n", rescored);
+    fprintf(md, "- Current scoring fingerprint: `0x%llx`\n\n", (unsigned long long)fingerprint);
+    fprintf(md, "| rank | id | deep | quick | flags | audit worst | audit avg | audit flags | source | report |\n");
+    fprintf(md, "|---:|---|---:|---:|---|---:|---:|---|---|---|\n");
+    for (uint32_t i = 0; i < count; i++) {
+        fprintf(md, "| %u | `%llx` | %lld | %lld | `0x%x` | %lld | %lld | `0x%x` | %s | `%s` |\n",
+                i + 1,
+                (unsigned long long)records[i].candidate.id,
+                (long long)records[i].candidate.deep_score,
+                (long long)records[i].candidate.quick_score,
+                records[i].candidate.fail_flags,
+                (long long)records[i].audit_worst,
+                (long long)records[i].audit_average,
+                records[i].audit_flags,
+                candidate_source_name(records[i].candidate.source),
+                records[i].source_report);
+    }
+    fclose(md);
+    return 1;
+}
+
+static int command_champions(void) {
+    ChampionRecord records[MAX_CHAMPIONS];
+    uint32_t rescored = 0;
+    uint64_t fingerprint = current_scoring_fingerprint();
+    uint32_t count = load_champion_records(records, MAX_CHAMPIONS, fingerprint, &rescored);
+    int wrote = write_champions_report(records, count, rescored, fingerprint);
+
+    printf("\n%s%sHash Forge champions%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %srecords%s      %u\n", c_dim(), c_reset(), count);
+    printf("  %srescored%s     %u\n", c_dim(), c_reset(), rescored);
+    printf("  %sfingerprint%s  0x%016llx\n\n", c_dim(), c_reset(), (unsigned long long)fingerprint);
+    printf("%s%4s  %-16s  %12s  %12s  %8s  %12s  %s%s\n",
+           c_dim(), "rank", "id", "deep", "quick", "flags", "audit", "report", c_reset());
+    for (uint32_t i = 0; i < count && i < 20; i++) {
+        printf("%s%4u%s  %s%016llx%s  %12lld  %12lld  0x%06x  %12lld  %s\n",
+               c_bold(), i + 1, c_reset(),
+               c_cyan(), (unsigned long long)records[i].candidate.id, c_reset(),
+               (long long)records[i].candidate.deep_score,
+               (long long)records[i].candidate.quick_score,
+               records[i].candidate.fail_flags,
+               (long long)records[i].audit_worst,
+               records[i].source_report);
+    }
+    printf("\n%s%sChampions complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %soutput%s  %s\n", c_dim(), c_reset(), wrote ? "out/champions.md" : "export failed");
+    return wrote ? 0 : 1;
+}
+
 static int parse_history_row(const char *line, HistoryRow *row) {
     unsigned threads = 0;
     unsigned candidate_generation = 0;
@@ -3167,10 +3551,11 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s baselines [--seed <u64>] [--quality <quick|normal|deep>] [--quick|--deep]\n", program);
+    printf("  %s champions\n", program);
     printf("  %s history [--top <n>]\n", program);
     printf("  %s export-best\n", program);
 }
@@ -3227,6 +3612,8 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             options->no_starter = 1;
         } else if (strcmp(argv[i], "--no-refresh") == 0) {
             options->no_refresh = 1;
+        } else if (strcmp(argv[i], "--no-champions") == 0) {
+            options->no_champions = 1;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;
@@ -3459,6 +3846,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_baselines(&options);
+    }
+
+    if (strcmp(argv[1], "champions") == 0) {
+        if (argc != 2) {
+            fprintf(stderr, "champions takes no arguments\n");
+            return 2;
+        }
+        return command_champions();
     }
 
     if (strcmp(argv[1], "history") == 0) {

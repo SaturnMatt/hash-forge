@@ -55,9 +55,11 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-starter --no-refresh
+.\build\hash-forge.exe run --seed 123 --generations 100 --no-champions
 .\build\hash-forge.exe compare --seed 123 --seeds 3 --generations 25 --threads 4
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 .\build\hash-forge.exe baselines --seed 123 --quality deep
+.\build\hash-forge.exe champions
 .\build\hash-forge.exe history --top 10
 .\build\hash-forge.exe export-best
 ```
@@ -71,9 +73,10 @@ survivors, mutates most of the remaining population, recombines a small
 crossover lane from survivor pairs, and injects fresh random immigrants to
 preserve diversity. Runs begin with a tiny compact-starter lane plus random
 candidates, so the forge has a known decent mixer family without losing broad
-exploration. Duplicate candidate ids are repaired during breeding so a
-generation spends less budget rechecking identical programs. On completion it
-writes:
+exploration. Clean winners are saved under `out\champions\`, and future runs
+load the top clean champions as starter material unless `--no-champions` is
+supplied. Duplicate candidate ids are repaired during breeding so a generation
+spends less budget rechecking identical programs. On completion it writes:
 Opcode generation is lightly biased toward mixing-heavy operations such as
 `XOR`, `MUL`, and rotates while keeping every VM operation reachable.
 Generated and mutated instructions are repaired to avoid obvious dead forms
@@ -101,6 +104,8 @@ out\summary.txt
 out\bench.md
 out\compare.md
 out\baselines.md
+out\champions\*.hfch
+out\champions.md
 ```
 
 `out\best.c` is standalone C containing the exported winner. Export removes
@@ -144,6 +149,12 @@ rows as lab reference marks: fail flags matter first, then deep score, then
 speed and exported instruction count. Matching or beating a baseline is useful
 evidence, not cryptographic proof.
 
+`champions` lists saved custom hashes from `out\champions\`, ranks them by the
+same ordering used by selection, and writes `out\champions.md`. Champion records
+include a scoring fingerprint derived from established baseline scores. If that
+fingerprint changes, champion loading and `champions` automatically rescore
+saved records before using them.
+
 ## Tests
 
 ```powershell
@@ -158,8 +169,9 @@ compares deterministic 100-generation runs across `--threads 1` and
 values, verifies `--threads auto`, verifies `out/report.md` and
 `out/summary.txt`, checks quality modes, checks time-limited run contracts,
 verifies `bench` plus `out/bench.md`, verifies policy comparison output,
-verifies established-hash baseline output, verifies history leaderboard output,
-and compiles `out/best.c` independently.
+verifies established-hash baseline output, verifies champion save/list/load and
+fingerprint rescore behavior, verifies history leaderboard output, and compiles
+`out/best.c` independently.
 
 `smoke.ps1` is a compatibility entry point that runs the same strict suite.
 

@@ -9,6 +9,8 @@ $reportPath = Join-Path $root "out\report.md"
 $benchPath = Join-Path $root "out\bench.md"
 $comparePath = Join-Path $root "out\compare.md"
 $baselinesPath = Join-Path $root "out\baselines.md"
+$championsPath = Join-Path $root "out\champions.md"
+$championsDir = Join-Path $root "out\champions"
 $historyMdPath = Join-Path $root "out\history.md"
 $bestCPath = Join-Path $root "out\best.c"
 $bestTxtPath = Join-Path $root "out\best.txt"
@@ -69,6 +71,8 @@ function Read-RunSummary {
     Assert $match.Success "summary line did not match expected format: $line"
     $starterMatch = [regex]::Match($line, 'starter_candidates=(\d+)')
     $refreshMatch = [regex]::Match($line, 'refresh_enabled=(yes|no)')
+    $championMatch = [regex]::Match($line, 'champion_starters=(\d+)')
+    $sourceMatch = [regex]::Match($line, 'source=(\w+)')
     [pscustomobject]@{
         Id = $match.Groups[1].Value
         CandidateGeneration = [uint64]$match.Groups[2].Value
@@ -85,6 +89,8 @@ function Read-RunSummary {
         TotalCandidates = [uint64]$match.Groups[13].Value
         StarterCandidates = if ($starterMatch.Success) { [uint32]$starterMatch.Groups[1].Value } else { 8 }
         RefreshEnabled = if ($refreshMatch.Success) { $refreshMatch.Groups[1].Value } else { "yes" }
+        ChampionStarters = if ($championMatch.Success) { [uint32]$championMatch.Groups[1].Value } else { 0 }
+        Source = if ($sourceMatch.Success) { $sourceMatch.Groups[1].Value } else { "unknown" }
     }
 }
 
@@ -97,6 +103,8 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
     Assert ($report -match [regex]::Escape("- Compact starter candidates: ``$($summary.StarterCandidates)``")) "report missing starter count"
+    Assert ($report -match [regex]::Escape("- Champion starters loaded: ``$($summary.ChampionStarters)``")) "report missing champion starter run setting"
+    Assert ($report -match [regex]::Escape("- Champion starter candidates: ``$($summary.ChampionStarters)``")) "report missing champion starter population setting"
     Assert ($report -match [regex]::Escape("- Total hash functions evaluated: ``$($summary.TotalCandidates)``")) "report missing total evaluated"
     Assert ($report -match "Diversity telemetry") "report missing diversity telemetry"
     Assert ($report -match "Unique candidates in last scored generation") "report missing unique candidate count"
@@ -105,6 +113,7 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Extra adaptive random immigrants") "report missing adaptive immigrant count"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)
     Assert ($report -match [regex]::Escape("- ID: ``$hexId``")) "report missing best id"
+    Assert ($report -match "Source ancestry") "report missing source ancestry"
     Assert ($report -match "Quick score") "report missing quick score"
     Assert ($report -match "Final deep score") "report missing deep score"
     Assert ($report -match "Fail flags") "report missing fail flags"
@@ -156,6 +165,8 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     Assert (Test-Path $bestTxtPath) "missing out\best.txt"
     $bestTxt = Get-Content $bestTxtPath -Raw
     Assert ($bestTxt -match "exported_instruction_count") "best.txt missing exported instruction count"
+    Assert ($bestTxt -match "champion_starters") "best.txt missing champion starter count"
+    Assert ($bestTxt -match "source:") "best.txt missing source"
     $summary
 }
 
@@ -230,6 +241,15 @@ function Assert-BaselinesReport {
     Assert ($baselines -match "How to use this") "baselines report missing interpretation"
 }
 
+function Assert-ChampionsReport {
+    Assert (Test-Path $championsPath) "missing out\champions.md"
+    $champions = Get-Content $championsPath -Raw
+    Assert ($champions -match "hash-forge champions") "champions report missing title"
+    Assert ($champions -match "Champion records") "champions report missing record count"
+    Assert ($champions -match "Current scoring fingerprint") "champions report missing fingerprint"
+    Assert ($champions -match "audit worst") "champions report missing audit column"
+}
+
 function Assert-HistoryReport {
     Assert (Test-Path $historyMdPath) "missing out\history.md"
     $historyReport = Get-Content $historyMdPath -Raw
@@ -254,6 +274,8 @@ try {
 
 try {
 Set-Location $root
+Remove-Item -LiteralPath $championsDir -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $championsPath -Force -ErrorAction SilentlyContinue
 & (Join-Path $root "build.ps1")
 
 $selfTest = Invoke-Captured $exe @("self-test")
@@ -278,13 +300,16 @@ $badCompare = Invoke-Captured $exe @("compare", "--seeds", "0") @(2)
 Assert ($badCompare.Output -match "invalid --seeds") "bad-compare-seeds error text changed"
 $badBaselines = Invoke-Captured $exe @("baselines", "--quality", "maximum") @(2)
 Assert ($badBaselines.Output -match "invalid --quality") "bad-baselines-quality error text changed"
+$badChampions = Invoke-Captured $exe @("champions", "--top", "1") @(2)
+Assert ($badChampions.Output -match "champions takes no arguments") "bad-champions error text changed"
 
-$thread1 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "1")
+$thread1 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "1", "--no-champions")
 Assert ($thread1.RunGeneration -eq 100) "thread=1 run did not complete 100 generations"
 Assert ($thread1.StopReason -eq "generation limit") "thread=1 run stop reason was not generation limit"
 Assert ($thread1.Threads -eq 1) "thread=1 summary reported $($thread1.Threads)"
+Assert ($thread1.ChampionStarters -eq 0) "thread=1 no-champions run loaded champions"
 
-$thread4 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "4")
+$thread4 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "4", "--no-champions")
 Assert ($thread4.RunGeneration -eq 100) "thread=4 run did not complete 100 generations"
 Assert ($thread4.StopReason -eq "generation limit") "thread=4 run stop reason was not generation limit"
 Assert ($thread4.Threads -eq 4) "thread=4 summary reported $($thread4.Threads)"
@@ -294,35 +319,35 @@ Assert ($thread1.Deep -eq $thread4.Deep) "thread=1 and thread=4 deep scores diff
 Assert ($thread1.TotalCandidates -eq $thread4.TotalCandidates) "thread=1 and thread=4 total evaluations differ"
 
 foreach ($threads in @(2, 4, 999)) {
-    $summary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--threads", "$threads")
+    $summary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--threads", "$threads", "--no-champions")
     $expectedThreads = if ($threads -eq 999) { 32 } else { $threads }
     Assert ($summary.Threads -eq $expectedThreads) "thread stress $threads reported $($summary.Threads)"
     Assert ($summary.RunGeneration -eq 5) "thread stress $threads did not complete 5 generations"
     Assert ($summary.TotalCandidates -gt 0) "thread stress $threads had zero total candidates"
 }
 
-$defaultThreadSummary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5")
+$defaultThreadSummary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--no-champions")
 Assert ($defaultThreadSummary.Threads -ge 1) "default thread count below 1"
 Assert ($defaultThreadSummary.Threads -le 32) "default thread count above cap"
 Assert ($defaultThreadSummary.RunGeneration -eq 5) "default-thread run did not complete 5 generations"
 
-$autoThreadSummary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--threads", "auto")
+$autoThreadSummary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--threads", "auto", "--no-champions")
 Assert ($autoThreadSummary.Threads -ge 1) "auto thread count below 1"
 Assert ($autoThreadSummary.Threads -le 32) "auto thread count above cap"
 Assert ($autoThreadSummary.RunGeneration -eq 5) "auto-thread run did not complete 5 generations"
 
-$deepQualitySummary = Invoke-RunAndReadSummary @("run", "--seed", "789", "--generations", "5", "--threads", "2", "--quality", "deep")
+$deepQualitySummary = Invoke-RunAndReadSummary @("run", "--seed", "789", "--generations", "5", "--threads", "2", "--quality", "deep", "--no-champions")
 Assert ($deepQualitySummary.Quality -eq "deep") "deep quality run reported $($deepQualitySummary.Quality)"
 Assert ($deepQualitySummary.RunGeneration -eq 5) "deep quality run did not complete 5 generations"
 Assert ($deepQualitySummary.DeepCandidates -ge 17) "deep quality run did not deep-score expected candidates"
 
-$toggleSummary = Invoke-RunAndReadSummary @("run", "--seed", "321", "--generations", "5", "--threads", "2", "--no-starter", "--no-refresh")
+$toggleSummary = Invoke-RunAndReadSummary @("run", "--seed", "321", "--generations", "5", "--threads", "2", "--no-starter", "--no-refresh", "--no-champions")
 Assert ($toggleSummary.RunGeneration -eq 5) "toggle run did not complete 5 generations"
 $toggleReport = Get-Content $reportPath -Raw
 Assert ($toggleReport -match [regex]::Escape("- Compact starter candidates: ``0``")) "toggle report did not disable starter lane"
 Assert ($toggleReport -match [regex]::Escape("- Stagnation refresh window: ``0`` generations")) "toggle report did not disable refresh"
 
-$timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4")
+$timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4", "--no-champions")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"
 Assert ($timeSummary.Threads -eq 4) "time-limited run reported wrong thread count"
 Assert ($timeSummary.TotalCandidates -gt 0) "time-limited run had zero total candidates"
@@ -347,6 +372,31 @@ Assert ($baselinesResult.Output -match "splitmix64_finalizer") "baselines output
 Assert ($baselinesResult.Output -match "murmur3_fmix64") "baselines output missing murmur fmix"
 Assert ($baselinesResult.Output -match "fnv1a64_pair") "baselines output missing fnv"
 Assert-BaselinesReport
+
+$championSeedRun = Invoke-RunAndReadSummary @("run", "--seed", "9011", "--seconds", "2", "--threads", "4", "--quality", "deep", "--no-champions")
+Assert ($championSeedRun.Flags -eq "0") "champion seed run did not produce a clean candidate"
+Assert (Test-Path $championsDir) "champion directory was not created"
+$championFiles = @(Get-ChildItem -LiteralPath $championsDir -Filter *.hfch)
+Assert ($championFiles.Count -ge 1) "clean run did not save a champion"
+$championsResult = Invoke-Captured $exe @("champions")
+Assert ($championsResult.Output -match "Champions complete") "champions output missing completion"
+Assert ($championsResult.Output -match "records\s+\d+") "champions output missing record count"
+Assert-ChampionsReport
+
+$env:HASH_FORGE_SCORE_FINGERPRINT_SALT = "strict-test"
+$saltedChampions = Invoke-Captured $exe @("champions")
+Assert ($saltedChampions.Output -match "rescored\s+[1-9]") "salted fingerprint did not trigger champion rescore"
+Remove-Item Env:\HASH_FORGE_SCORE_FINGERPRINT_SALT
+$unsaltedChampions = Invoke-Captured $exe @("champions")
+Assert ($unsaltedChampions.Output -match "rescored\s+[1-9]") "restored fingerprint did not trigger champion rescore"
+
+$championEnabled1 = Invoke-RunAndReadSummary @("run", "--seed", "222", "--generations", "3", "--threads", "2", "--quality", "quick")
+Assert ($championEnabled1.ChampionStarters -ge 1) "champion-enabled run did not load champions"
+$championEnabled2 = Invoke-RunAndReadSummary @("run", "--seed", "222", "--generations", "3", "--threads", "2", "--quality", "quick")
+Assert ($championEnabled1.Id -eq $championEnabled2.Id) "champion-enabled deterministic runs chose different best ids"
+Assert ($championEnabled1.Quick -eq $championEnabled2.Quick) "champion-enabled deterministic runs had different quick scores"
+$championDisabled = Invoke-RunAndReadSummary @("run", "--seed", "222", "--generations", "3", "--threads", "2", "--quality", "quick", "--no-champions")
+Assert ($championDisabled.ChampionStarters -eq 0) "no-champions run loaded champions"
 
 $badHistory = Invoke-Captured $exe @("history", "--top", "0") @(2)
 Assert ($badHistory.Output -match "invalid --top") "bad-history-top error text changed"
