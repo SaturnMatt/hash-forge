@@ -716,6 +716,12 @@ static void print_fail_flags(FILE *out, uint32_t flags) {
     if (flags & FAIL_NO_HASH) { fprintf(out, "%sNO_HASH", wrote ? ", " : ""); wrote = 1; }
 }
 
+static void make_reasonable_baseline(Candidate *candidate);
+static void make_constant_bad(Candidate *candidate);
+static void make_key_only_bad(Candidate *candidate);
+static void make_seed_only_bad(Candidate *candidate);
+static void make_xor_only_bad(Candidate *candidate);
+
 static void count_ops(const Candidate *candidate, uint32_t counts[OP_COUNT]) {
     memset(counts, 0, OP_COUNT * sizeof(counts[0]));
     for (uint32_t i = 0; i < candidate->instruction_count; i++) {
@@ -781,6 +787,42 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "|---|---:|\n");
     for (uint32_t i = 0; i < OP_COUNT; i++) {
         fprintf(md, "| %s | %u |\n", op_name((uint8_t)i), op_counts[i]);
+    }
+    fprintf(md, "\n");
+
+    fprintf(md, "## Baseline comparison\n\n");
+    ScoreScratch *comparison_scratch = (ScoreScratch *)calloc(1, sizeof(*comparison_scratch));
+    if (comparison_scratch) {
+        typedef void (*ComparisonMaker)(Candidate *);
+        typedef struct ComparisonCase {
+            const char *name;
+            ComparisonMaker maker;
+        } ComparisonCase;
+        ComparisonCase cases[] = {
+            { "best_candidate", NULL },
+            { "baseline_mixer", make_reasonable_baseline },
+            { "bad_constant", make_constant_bad },
+            { "bad_key_only", make_key_only_bad },
+            { "bad_seed_only", make_seed_only_bad },
+            { "bad_xor_only", make_xor_only_bad }
+        };
+        fprintf(md, "| candidate | deep score | flags |\n");
+        fprintf(md, "|---|---:|---|\n");
+        for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            Candidate compare_candidate;
+            if (cases[i].maker) {
+                cases[i].maker(&compare_candidate);
+            } else {
+                compare_candidate = *candidate;
+            }
+            ScoreResult score = score_candidate(&compare_candidate, comparison_scratch, options->seed, 1, options->quality);
+            fprintf(md, "| %s | %lld | `0x%x` (", cases[i].name, (long long)score.score, score.fail_flags);
+            print_fail_flags(md, score.fail_flags);
+            fprintf(md, ") |\n");
+        }
+        free(comparison_scratch);
+    } else {
+        fprintf(md, "Skipped: failed to allocate comparison scratch space.\n");
     }
     fprintf(md, "\n");
 

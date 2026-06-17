@@ -329,7 +329,7 @@ out/bench.md
 `best.c` should be a standalone exported C function, independent of the VM.
 `report.md` should be the full human-readable report for the completed run,
 including quick, deep, and total candidate hash functions evaluated, plus a
-best-candidate operator histogram.
+best-candidate operator histogram and baseline comparison scores.
 
 ## Multithreading
 
