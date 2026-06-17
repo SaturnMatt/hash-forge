@@ -666,7 +666,7 @@ static int compare_candidates(const void *a_ptr, const void *b_ptr) {
     uint32_t b_severity = fail_severity(b->fail_flags);
     if (a_severity != b_severity) return a_severity < b_severity ? -1 : 1;
     if (a->fail_flags != b->fail_flags) return a->fail_flags < b->fail_flags ? -1 : 1;
-    if (a->deep_score != INT64_MIN || b->deep_score != INT64_MIN) {
+    if (a->deep_score != INT64_MIN && b->deep_score != INT64_MIN) {
         if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score ? -1 : 1;
     }
     if (a->quick_score != b->quick_score) return a->quick_score > b->quick_score ? -1 : 1;
@@ -1367,7 +1367,7 @@ static int run_selection_self_tests(void) {
     b.deep_score = -1;
     a.quick_score = 1000000;
     b.quick_score = -1000000;
-    if (!self_check(compare_candidates(&a, &b) > 0, "selection prefers available deep score")) return 0;
+    if (!self_check(compare_candidates(&a, &b) < 0, "selection avoids pending deep lock-in")) return 0;
 
     a.deep_score = INT64_MIN;
     b.deep_score = INT64_MIN;
