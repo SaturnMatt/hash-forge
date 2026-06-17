@@ -193,6 +193,8 @@ function Assert-HistoryReport {
     Assert ($historyReport -match "best id") "history report missing best id column"
     Assert ($historyReport -match "deep") "history report missing deep score column"
     Assert ($historyReport -match "total candidates") "history report missing total candidates column"
+    Assert ($historyReport -match "starters") "history report missing starter policy column"
+    Assert ($historyReport -match "refresh") "history report missing refresh policy column"
     Assert ($historyReport -match "flag names") "history report missing decoded flag column"
 }
 

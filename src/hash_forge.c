@@ -177,6 +177,8 @@ typedef struct HistoryRow {
     int64_t deep_score;
     uint32_t flags;
     uint64_t total_candidates;
+    uint32_t starter_candidates;
+    uint32_t refresh_enabled;
 } HistoryRow;
 
 typedef struct ScoreTask {
@@ -1244,9 +1246,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *history = fopen("out/history.csv", "ab");
     if (history) {
         if (!history_exists) {
-            fprintf(history, "unix_time,seed,run_generation,elapsed_seconds,stop_reason,quality,threads,best_id,candidate_generation,instruction_count,quick_score,deep_score,flags,total_candidates\n");
+            fprintf(history, "unix_time,seed,run_generation,elapsed_seconds,stop_reason,quality,threads,best_id,candidate_generation,instruction_count,quick_score,deep_score,flags,total_candidates,starter_candidates,refresh_enabled\n");
         }
-        fprintf(history, "%lld,%llu,%llu,%.3f,%s,%s,%u,%llx,%u,%u,%lld,%lld,0x%x,%llu\n",
+        fprintf(history, "%lld,%llu,%llu,%.3f,%s,%s,%u,%llx,%u,%u,%lld,%lld,0x%x,%llu,%u,%u\n",
                 (long long)time(NULL),
                 (unsigned long long)options->seed,
                 (unsigned long long)report->run_generation,
@@ -1260,7 +1262,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (long long)candidate->quick_score,
                 (long long)candidate->deep_score,
                 candidate->fail_flags,
-                (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+                (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated),
+                options->no_starter ? 0u : STARTER_COUNT,
+                options->no_refresh ? 0u : 1u);
         fclose(history);
     }
 
@@ -2345,9 +2349,11 @@ static int parse_history_row(const char *line, HistoryRow *row) {
     unsigned long long total_candidates = 0;
     long long quick_score = 0;
     long long deep_score = 0;
+    unsigned starter_candidates = STARTER_COUNT;
+    unsigned refresh_enabled = 1;
 
     int parsed = sscanf(line,
-                        "%lld,%llu,%llu,%lf,%63[^,],%15[^,],%u,%llx,%u,%u,%lld,%lld,0x%x,%llu",
+                        "%lld,%llu,%llu,%lf,%63[^,],%15[^,],%u,%llx,%u,%u,%lld,%lld,0x%x,%llu,%u,%u",
                         &row->unix_time,
                         &seed,
                         &run_generation,
@@ -2361,8 +2367,10 @@ static int parse_history_row(const char *line, HistoryRow *row) {
                         &quick_score,
                         &deep_score,
                         &flags,
-                        &total_candidates);
-    if (parsed != 14) return 0;
+                        &total_candidates,
+                        &starter_candidates,
+                        &refresh_enabled);
+    if (parsed != 14 && parsed != 16) return 0;
 
     row->seed = (uint64_t)seed;
     row->run_generation = (uint64_t)run_generation;
@@ -2374,6 +2382,8 @@ static int parse_history_row(const char *line, HistoryRow *row) {
     row->deep_score = (int64_t)deep_score;
     row->flags = (uint32_t)flags;
     row->total_candidates = (uint64_t)total_candidates;
+    row->starter_candidates = (uint32_t)starter_candidates;
+    row->refresh_enabled = refresh_enabled ? 1u : 0u;
     return 1;
 }
 
@@ -2392,10 +2402,12 @@ static int compare_history_rows(const void *a_ptr, const void *b_ptr) {
 
 static void print_history_row(FILE *out, uint32_t rank, const HistoryRow *row, int markdown) {
     if (markdown) {
-        fprintf(out, "| %u | %s | %u | %llu | %llu | %lld | %lld | `0x%x` | ",
+        fprintf(out, "| %u | %s | %u | %u | %u | %llu | %llu | %lld | %lld | `0x%x` | ",
                 rank,
                 row->quality,
                 row->threads,
+                row->starter_candidates,
+                row->refresh_enabled,
                 (unsigned long long)row->run_generation,
                 (unsigned long long)row->total_candidates,
                 (long long)row->deep_score,
@@ -2407,10 +2419,12 @@ static void print_history_row(FILE *out, uint32_t rank, const HistoryRow *row, i
                 (unsigned long long)row->seed,
                 row->elapsed_seconds);
     } else {
-        printf("%s%4u%s  %-6s  %3u  %7llu  %12lld  %12lld  0x%02x  %s%016llx%s  %8llu  %7.3fs\n",
+        printf("%s%4u%s  %-6s  %3u  %5u  %3u  %7llu  %12lld  %12lld  0x%02x  %s%016llx%s  %8llu  %7.3fs\n",
                c_bold(), rank, c_reset(),
                row->quality,
                row->threads,
+               row->starter_candidates,
+               row->refresh_enabled,
                (unsigned long long)row->run_generation,
                (long long)row->deep_score,
                (long long)row->quick_score,
@@ -2433,8 +2447,8 @@ static int write_history_report(const HistoryRow *rows, uint32_t row_count, uint
     fprintf(md, "# hash-forge history\n\n");
     fprintf(md, "- Rows read: `%u`\n", row_count);
     fprintf(md, "- Top rows shown: `%u`\n\n", limit);
-    fprintf(md, "| rank | quality | threads | generations | total candidates | deep | quick | flags | flag names | best id | seed | elapsed |\n");
-    fprintf(md, "|---:|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|\n");
+    fprintf(md, "| rank | quality | threads | starters | refresh | generations | total candidates | deep | quick | flags | flag names | best id | seed | elapsed |\n");
+    fprintf(md, "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|\n");
     for (uint32_t i = 0; i < limit; i++) {
         print_history_row(md, i + 1, &rows[i], 1);
     }
@@ -2483,8 +2497,8 @@ static int command_history(const HistoryOptions *options) {
     printf("\n%s%sHash Forge history top runs%s\n", c_bold(), c_cyan(), c_reset());
     printf("  %srows%s       %u\n", c_dim(), c_reset(), row_count);
     printf("  %sshowing%s    %u\n", c_dim(), c_reset(), limit);
-    printf("\n%s%4s  %-6s  %3s  %7s  %12s  %12s  %5s  %16s  %8s  %8s%s\n",
-           c_dim(), "rank", "qual", "thr", "gens", "deep", "quick", "flags", "best id", "seed", "elapsed", c_reset());
+    printf("\n%s%4s  %-6s  %3s  %5s  %3s  %7s  %12s  %12s  %5s  %16s  %8s  %8s%s\n",
+           c_dim(), "rank", "qual", "thr", "start", "ref", "gens", "deep", "quick", "flags", "best id", "seed", "elapsed", c_reset());
     for (uint32_t i = 0; i < limit; i++) {
         print_history_row(stdout, i + 1, &rows[i], 0);
     }
