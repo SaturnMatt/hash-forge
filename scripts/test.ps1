@@ -73,6 +73,7 @@ function Read-RunSummary {
     $refreshMatch = [regex]::Match($line, 'refresh_enabled=(yes|no)')
     $championMatch = [regex]::Match($line, 'champion_starters=(\d+)')
     $sourceMatch = [regex]::Match($line, 'source=(\w+)')
+    $crossoverMatch = [regex]::Match($line, 'crossover_children=(\d+)')
     [pscustomobject]@{
         Id = $match.Groups[1].Value
         CandidateGeneration = [uint64]$match.Groups[2].Value
@@ -91,6 +92,7 @@ function Read-RunSummary {
         RefreshEnabled = if ($refreshMatch.Success) { $refreshMatch.Groups[1].Value } else { "yes" }
         ChampionStarters = if ($championMatch.Success) { [uint32]$championMatch.Groups[1].Value } else { 0 }
         Source = if ($sourceMatch.Success) { $sourceMatch.Groups[1].Value } else { "unknown" }
+        CrossoverChildren = if ($crossoverMatch.Success) { [uint32]$crossoverMatch.Groups[1].Value } else { 16 }
     }
 }
 
@@ -100,7 +102,9 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("- Stop reason: ``$($summary.StopReason)``")) "report missing stop reason"
     Assert ($report -match [regex]::Escape("- Quality: ``$($summary.Quality)``")) "report missing quality"
     Assert ($report -match [regex]::Escape("- Scoring threads: ``$($summary.Threads)``")) "report missing thread count"
-    Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
+    $expectedCrossoverEnabled = if ($summary.CrossoverChildren -gt 0) { "yes" } else { "no" }
+    Assert ($report -match [regex]::Escape("- Crossover enabled: ``$expectedCrossoverEnabled``")) "report missing crossover enabled setting"
+    Assert ($report -match [regex]::Escape("- Crossover children per generation: ``$($summary.CrossoverChildren)``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
     Assert ($report -match [regex]::Escape("- Compact starter candidates: ``$($summary.StarterCandidates)``")) "report missing starter count"
     Assert ($report -match [regex]::Escape("- Champion starters loaded: ``$($summary.ChampionStarters)``")) "report missing champion starter run setting"
@@ -166,6 +170,7 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     $bestTxt = Get-Content $bestTxtPath -Raw
     Assert ($bestTxt -match "exported_instruction_count") "best.txt missing exported instruction count"
     Assert ($bestTxt -match "champion_starters") "best.txt missing champion starter count"
+    Assert ($bestTxt -match "crossover_children") "best.txt missing crossover child count"
     Assert ($bestTxt -match "source:") "best.txt missing source"
     $summary
 }
@@ -260,6 +265,7 @@ function Assert-HistoryReport {
     Assert ($historyReport -match "total candidates") "history report missing total candidates column"
     Assert ($historyReport -match "starters") "history report missing starter policy column"
     Assert ($historyReport -match "refresh") "history report missing refresh policy column"
+    Assert ($historyReport -match "crossover") "history report missing crossover policy column"
     Assert ($historyReport -match "flag names") "history report missing decoded flag column"
 }
 
@@ -346,6 +352,10 @@ Assert ($toggleSummary.RunGeneration -eq 5) "toggle run did not complete 5 gener
 $toggleReport = Get-Content $reportPath -Raw
 Assert ($toggleReport -match [regex]::Escape("- Compact starter candidates: ``0``")) "toggle report did not disable starter lane"
 Assert ($toggleReport -match [regex]::Escape("- Stagnation refresh window: ``0`` generations")) "toggle report did not disable refresh"
+
+$noCrossoverSummary = Invoke-RunAndReadSummary @("run", "--seed", "654", "--generations", "5", "--threads", "2", "--no-champions", "--no-crossover")
+Assert ($noCrossoverSummary.RunGeneration -eq 5) "no-crossover run did not complete 5 generations"
+Assert ($noCrossoverSummary.CrossoverChildren -eq 0) "no-crossover run reported $($noCrossoverSummary.CrossoverChildren) crossover children"
 
 $timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4", "--no-champions")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"

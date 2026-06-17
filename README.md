@@ -56,6 +56,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-starter --no-refresh
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-champions
+.\build\hash-forge.exe run --seed 123 --generations 100 --no-crossover --no-champions
 .\build\hash-forge.exe compare --seed 123 --seeds 3 --generations 25 --threads 4
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 .\build\hash-forge.exe baselines --seed 123 --quality deep
@@ -89,6 +90,9 @@ Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candid
 checks. `normal` is the default.
 Use `--no-starter` or `--no-refresh` for deterministic A/B runs against the
 compact starter lane or adaptive stagnation refresh.
+Use `--no-crossover` for deterministic A/B runs that replace the crossover lane
+with more mutation children while keeping the same population and immigrant
+counts.
 
 ```txt
 out\best.c

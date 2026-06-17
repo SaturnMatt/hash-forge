@@ -145,6 +145,7 @@ typedef struct RunOptions {
     int no_starter;
     int no_refresh;
     int no_champions;
+    int no_crossover;
 } RunOptions;
 
 typedef struct RunReport {
@@ -160,6 +161,7 @@ typedef struct RunReport {
     uint32_t threads;
     uint32_t last_unique_candidates;
     uint32_t champion_starters_loaded;
+    uint32_t crossover_children_per_generation;
 } RunReport;
 
 typedef struct BenchOptions {
@@ -259,6 +261,7 @@ typedef struct HistoryRow {
     uint64_t total_candidates;
     uint32_t starter_candidates;
     uint32_t refresh_enabled;
+    uint32_t crossover_children;
 } HistoryRow;
 
 typedef struct ChampionRecord {
@@ -1487,6 +1490,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Stop reason: `%s`\n", report->stop_reason);
     fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
+    fprintf(md, "- Crossover enabled: `%s`\n", report->crossover_children_per_generation ? "yes" : "no");
     fprintf(md, "- Champion starters loaded: `%u`\n\n", report->champion_starters_loaded);
 
     fprintf(md, "## Evaluation totals\n\n");
@@ -1510,7 +1514,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
-    fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
+    fprintf(md, "- Crossover children per generation: `%u`\n", report->crossover_children_per_generation);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Compact starter candidates: `%u`\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(md, "- Champion starter candidates: `%u`\n", report->champion_starters_loaded);
@@ -1787,6 +1791,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "starter_candidates: %u\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(txt, "stagnation_refresh_enabled: %s\n", options->no_refresh ? "no" : "yes");
     fprintf(txt, "champion_starters: %u\n", report->champion_starters_loaded);
+    fprintf(txt, "crossover_children: %u\n", report->crossover_children_per_generation);
     fprintf(txt, "source: %s\n", candidate_source_name(candidate->source));
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "exported_instruction_count: %u\n", exported_candidate.instruction_count);
@@ -1808,7 +1813,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s champion_starters=%u source=%s\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s champion_starters=%u source=%s crossover_children=%u\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -1824,7 +1829,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 options->no_starter ? 0u : STARTER_COUNT,
                 options->no_refresh ? "no" : "yes",
                 report->champion_starters_loaded,
-                candidate_source_name(candidate->source));
+                candidate_source_name(candidate->source),
+                report->crossover_children_per_generation);
         fclose(summary);
     }
 
@@ -1837,9 +1843,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *history = fopen("out/history.csv", "ab");
     if (history) {
         if (!history_exists) {
-            fprintf(history, "unix_time,seed,run_generation,elapsed_seconds,stop_reason,quality,threads,best_id,candidate_generation,instruction_count,quick_score,deep_score,flags,total_candidates,starter_candidates,refresh_enabled\n");
+            fprintf(history, "unix_time,seed,run_generation,elapsed_seconds,stop_reason,quality,threads,best_id,candidate_generation,instruction_count,quick_score,deep_score,flags,total_candidates,starter_candidates,refresh_enabled,crossover_children\n");
         }
-        fprintf(history, "%lld,%llu,%llu,%.3f,%s,%s,%u,%llx,%u,%u,%lld,%lld,0x%x,%llu,%u,%u\n",
+        fprintf(history, "%lld,%llu,%llu,%.3f,%s,%s,%u,%llx,%u,%u,%lld,%lld,0x%x,%llu,%u,%u,%u\n",
                 (long long)time(NULL),
                 (unsigned long long)options->seed,
                 (unsigned long long)report->run_generation,
@@ -1855,7 +1861,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 candidate->fail_flags,
                 (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated),
                 options->no_starter ? 0u : STARTER_COUNT,
-                options->no_refresh ? 0u : 1u);
+                options->no_refresh ? 0u : 1u,
+                report->crossover_children_per_generation);
         fclose(history);
     }
 
@@ -2511,7 +2518,12 @@ static const char *stop_reason_for(const RunOptions *options, uint64_t generatio
     return "stopped";
 }
 
+static uint32_t crossover_count_for_options(const RunOptions *options) {
+    return options->no_crossover ? 0u : CROSSOVER_COUNT;
+}
+
 static void print_run_header(const RunOptions *options, uint32_t score_threads) {
+    uint32_t crossover_count = crossover_count_for_options(options);
     printf("\n%s%sHash Forge run%s\n", c_bold(), c_cyan(), c_reset());
     printf("  %sseed%s         %llu\n", c_dim(), c_reset(), (unsigned long long)options->seed);
     printf("  %sgenerations%s  ", c_dim(), c_reset());
@@ -2525,7 +2537,7 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
            c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s",
            options->auto_threads ? " (auto)" : "");
     printf("  %spopulation%s   %u candidates, %u survivors, %u crossover, %u immigrants\n",
-           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, CROSSOVER_COUNT, IMMIGRANT_COUNT);
+           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, crossover_count, IMMIGRANT_COUNT);
     printf("  %schampions%s    %s\n", c_dim(), c_reset(), options->no_champions ? "disabled" : "enabled");
     printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
            c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
@@ -2699,6 +2711,7 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
     uint32_t score_threads = options->auto_threads
         ? choose_auto_thread_count(population, options->seed)
         : clamp_thread_count(options->threads, POPULATION_SIZE);
+    uint32_t crossover_count = crossover_count_for_options(options);
     uint32_t deep_every = deep_every_for_quality(options->quality);
     uint32_t deep_top_n = deep_top_n_for_quality(options->quality);
     ScorePool score_pool;
@@ -2779,7 +2792,7 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         }
         uint32_t immigrant_start = POPULATION_SIZE > immigrant_count ? POPULATION_SIZE - immigrant_count : SURVIVOR_COUNT;
         if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
-        uint32_t crossover_start = immigrant_start > CROSSOVER_COUNT ? immigrant_start - CROSSOVER_COUNT : SURVIVOR_COUNT;
+        uint32_t crossover_start = immigrant_start > crossover_count ? immigrant_start - crossover_count : SURVIVOR_COUNT;
         if (crossover_start < SURVIVOR_COUNT) crossover_start = SURVIVOR_COUNT;
         for (uint32_t i = SURVIVOR_COUNT; i < crossover_start; i++) {
             uint32_t r = rng_range(&rng, SURVIVOR_COUNT * SURVIVOR_COUNT);
@@ -2834,7 +2847,8 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         stop_reason_for(options, generation, elapsed),
         score_threads,
         last_unique_candidates,
-        champion_starters_loaded
+        champion_starters_loaded,
+        crossover_count
     };
 
     if (best_out) *best_out = best_seen;
@@ -3351,9 +3365,10 @@ static int parse_history_row(const char *line, HistoryRow *row) {
     long long deep_score = 0;
     unsigned starter_candidates = STARTER_COUNT;
     unsigned refresh_enabled = 1;
+    unsigned crossover_children = CROSSOVER_COUNT;
 
     int parsed = sscanf(line,
-                        "%lld,%llu,%llu,%lf,%63[^,],%15[^,],%u,%llx,%u,%u,%lld,%lld,0x%x,%llu,%u,%u",
+                        "%lld,%llu,%llu,%lf,%63[^,],%15[^,],%u,%llx,%u,%u,%lld,%lld,0x%x,%llu,%u,%u,%u",
                         &row->unix_time,
                         &seed,
                         &run_generation,
@@ -3369,8 +3384,9 @@ static int parse_history_row(const char *line, HistoryRow *row) {
                         &flags,
                         &total_candidates,
                         &starter_candidates,
-                        &refresh_enabled);
-    if (parsed != 14 && parsed != 16) return 0;
+                        &refresh_enabled,
+                        &crossover_children);
+    if (parsed != 14 && parsed != 16 && parsed != 17) return 0;
 
     row->seed = (uint64_t)seed;
     row->run_generation = (uint64_t)run_generation;
@@ -3384,6 +3400,7 @@ static int parse_history_row(const char *line, HistoryRow *row) {
     row->total_candidates = (uint64_t)total_candidates;
     row->starter_candidates = (uint32_t)starter_candidates;
     row->refresh_enabled = refresh_enabled ? 1u : 0u;
+    row->crossover_children = (uint32_t)crossover_children;
     return 1;
 }
 
@@ -3402,12 +3419,13 @@ static int compare_history_rows(const void *a_ptr, const void *b_ptr) {
 
 static void print_history_row(FILE *out, uint32_t rank, const HistoryRow *row, int markdown) {
     if (markdown) {
-        fprintf(out, "| %u | %s | %u | %u | %u | %llu | %llu | %lld | %lld | `0x%x` | ",
+        fprintf(out, "| %u | %s | %u | %u | %u | %u | %llu | %llu | %lld | %lld | `0x%x` | ",
                 rank,
                 row->quality,
                 row->threads,
                 row->starter_candidates,
                 row->refresh_enabled,
+                row->crossover_children,
                 (unsigned long long)row->run_generation,
                 (unsigned long long)row->total_candidates,
                 (long long)row->deep_score,
@@ -3419,12 +3437,13 @@ static void print_history_row(FILE *out, uint32_t rank, const HistoryRow *row, i
                 (unsigned long long)row->seed,
                 row->elapsed_seconds);
     } else {
-        printf("%s%4u%s  %-6s  %3u  %5u  %3u  %7llu  %12lld  %12lld  0x%02x  %s%016llx%s  %8llu  %7.3fs\n",
+        printf("%s%4u%s  %-6s  %3u  %5u  %3u  %5u  %7llu  %12lld  %12lld  0x%02x  %s%016llx%s  %8llu  %7.3fs\n",
                c_bold(), rank, c_reset(),
                row->quality,
                row->threads,
                row->starter_candidates,
                row->refresh_enabled,
+               row->crossover_children,
                (unsigned long long)row->run_generation,
                (long long)row->deep_score,
                (long long)row->quick_score,
@@ -3447,8 +3466,8 @@ static int write_history_report(const HistoryRow *rows, uint32_t row_count, uint
     fprintf(md, "# hash-forge history\n\n");
     fprintf(md, "- Rows read: `%u`\n", row_count);
     fprintf(md, "- Top rows shown: `%u`\n\n", limit);
-    fprintf(md, "| rank | quality | threads | starters | refresh | generations | total candidates | deep | quick | flags | flag names | best id | seed | elapsed |\n");
-    fprintf(md, "|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|\n");
+    fprintf(md, "| rank | quality | threads | starters | refresh | crossover | generations | total candidates | deep | quick | flags | flag names | best id | seed | elapsed |\n");
+    fprintf(md, "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|---:|\n");
     for (uint32_t i = 0; i < limit; i++) {
         print_history_row(md, i + 1, &rows[i], 1);
     }
@@ -3497,8 +3516,8 @@ static int command_history(const HistoryOptions *options) {
     printf("\n%s%sHash Forge history top runs%s\n", c_bold(), c_cyan(), c_reset());
     printf("  %srows%s       %u\n", c_dim(), c_reset(), row_count);
     printf("  %sshowing%s    %u\n", c_dim(), c_reset(), limit);
-    printf("\n%s%4s  %-6s  %3s  %5s  %3s  %7s  %12s  %12s  %5s  %16s  %8s  %8s%s\n",
-           c_dim(), "rank", "qual", "thr", "start", "ref", "gens", "deep", "quick", "flags", "best id", "seed", "elapsed", c_reset());
+    printf("\n%s%4s  %-6s  %3s  %5s  %3s  %5s  %7s  %12s  %12s  %5s  %16s  %8s  %8s%s\n",
+           c_dim(), "rank", "qual", "thr", "start", "ref", "cross", "gens", "deep", "quick", "flags", "best id", "seed", "elapsed", c_reset());
     for (uint32_t i = 0; i < limit; i++) {
         print_history_row(stdout, i + 1, &rows[i], 0);
     }
@@ -3551,7 +3570,7 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s baselines [--seed <u64>] [--quality <quick|normal|deep>] [--quick|--deep]\n", program);
@@ -3614,6 +3633,8 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             options->no_refresh = 1;
         } else if (strcmp(argv[i], "--no-champions") == 0) {
             options->no_champions = 1;
+        } else if (strcmp(argv[i], "--no-crossover") == 0) {
+            options->no_crossover = 1;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;

@@ -185,6 +185,11 @@ Loop:
 11. Print compact live status.
 12. Continue until stopped or until an optional generation limit is reached.
 
+For policy experiments, `hash-forge run --no-crossover` disables the crossover
+lane and fills those slots with normal mutation children instead. This keeps the
+population size, survivor count, and random immigrant count comparable while
+isolating crossover pressure.
+
 Mutation actions:
 
 ```txt
@@ -312,6 +317,7 @@ hash-forge run --seed 123 --seconds 60 --threads auto
 hash-forge run --seed 123 --seconds 60 --quality deep
 hash-forge run --seed 123 --generations 100 --no-starter --no-refresh
 hash-forge run --seed 123 --generations 100 --no-champions
+hash-forge run --seed 123 --generations 100 --no-crossover --no-champions
 hash-forge compare --seed 123 --seeds 3 --generations 25 --threads 4
 hash-forge bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 hash-forge baselines --seed 123 --quality deep
