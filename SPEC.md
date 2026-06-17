@@ -319,6 +319,8 @@ hash-forge run --seed 123 --generations 100 --no-starter --no-refresh
 hash-forge run --seed 123 --generations 100 --no-champions
 hash-forge run --seed 123 --generations 100 --no-crossover --no-champions
 hash-forge compare --seed 123 --seeds 3 --generations 25 --threads 4
+hash-forge policy --seed 9201 --seeds 5 --generations 1000 --threads 32 --quality deep
+hash-forge policy --seed-list 9201,9202,9203 --generations 1000 --threads 32 --quality deep
 hash-forge bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 hash-forge baselines --seed 123 --quality deep
 hash-forge champions
@@ -345,6 +347,12 @@ material.
 `compare` runs deterministic short policy trials for default, no-starter,
 no-refresh, and bare settings across one or more seeds. It should print a
 compact table with policy wins and averages, then write `out/compare.md`.
+
+`policy` runs a fuller deterministic same-budget policy comparison for default,
+no-crossover, no-starter, no-refresh, bare, and refresh-strong settings across a
+generated seed range or explicit comma-separated seed list. It should disable
+champion starters for fairness, print aggregate results, then write
+`out/policy.md` and `out/policy.csv`.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
@@ -398,6 +406,8 @@ out/history.md
 out/summary.txt
 out/bench.md
 out/compare.md
+out/policy.md
+out/policy.csv
 out/baselines.md
 out/champions/*.hfch
 out/champions.md

@@ -123,3 +123,119 @@ the need for Milestone 5 best-deep-seen retention.
 Commit hash:
 
 - `cc25afd Add improvement telemetry`
+
+## Milestone 2: Policy comparison mode
+
+Status: implemented and verified.
+
+Intended files:
+
+- `src/hash_forge.c`
+- `scripts/test.ps1`
+- `README.md`
+- `SPEC.md`
+- `docs/progress-ultimate-forge.md`
+
+Plan:
+
+- Add a dedicated `policy` command while leaving the existing `compare` command
+  intact for compatibility.
+- Support generated seed ranges via `--seed` and `--seeds`, plus explicit
+  comma-separated `--seed-list`.
+- Run a fixed generation budget across all policies and seeds.
+- Compare at least default, no-crossover, no-starter, no-refresh, bare, and
+  refresh-strong policies.
+- Write `out/policy.md` and `out/policy.csv`.
+- Include policy settings, per-trial metrics, aggregate wins, clean counts,
+  average/best scores, candidate totals, improvement telemetry, uniqueness, and
+  refresh counts.
+
+Risks:
+
+- Avoid making the current `compare` command brittle.
+- Keep policy runs deterministic and bounded for strict tests.
+- Avoid too much report-time audit work in the strict suite.
+- Refresh strength needs runtime controls without changing default `run`
+  behavior.
+
+Verification plan:
+
+```txt
+.\build.ps1
+.\scripts\test.ps1
+git diff --check
+.\scripts\smoke.ps1
+```
+
+Experiment plan:
+
+```txt
+.\build\hash-forge.exe policy --seed 9201 --seeds 2 --generations 50 --threads 4 --quality quick
+```
+
+Record the winning policy, clean counts, average deep scores, and whether the
+policy report gives enough information to choose longer testing.
+
+What changed:
+
+- Added `hash-forge policy`.
+- Added `--seed-list` parsing for explicit seed comparisons.
+- Added full same-budget policy reports at `out/policy.md` and `out/policy.csv`.
+- Compared default, no-crossover, no-starter, no-refresh, bare, and
+  refresh-strong policies.
+- Disabled champion starters inside policy comparison for fair policy isolation.
+- Added runtime refresh window/immigrant settings so refresh-strong is a real
+  run policy instead of only a label.
+- Added strict tests for policy output, policy CSV, deterministic seed-list
+  parity, and invalid seed-list handling.
+- Updated README and SPEC command/output documentation.
+
+Commands run:
+
+```txt
+.\build.ps1
+.\build\hash-forge.exe policy --seed 123 --seeds 1 --generations 3 --threads 1 --quality quick
+.\scripts\test.ps1
+git diff --check
+.\scripts\smoke.ps1
+.\build\hash-forge.exe policy --seed 9201 --seeds 2 --generations 50 --threads 4 --quality quick
+```
+
+Verification result:
+
+- `.\build.ps1`: pass.
+- Tiny policy artifact check run: pass.
+- `.\scripts\test.ps1`: pass.
+- `git diff --check`: pass, with expected CRLF warnings only.
+- `.\scripts\smoke.ps1`: pass.
+
+Experiment result:
+
+```txt
+seed_count=2
+generations=50
+threads=4
+quality=quick
+champion_starters=disabled
+
+policy          wins  clean_winners  clean_audits  avg_deep  best_deep  avg_last_improvement_gen
+default         0     0              0             1449498   1458435    37
+no-crossover    0     0              0             1508719   1519570    30
+no-starter      2     0              1             1529103   1530842    46
+no-refresh      0     0              0             1449498   1458435    37
+bare            0     0              0             1456307   1463895    32
+refresh-strong  0     0              0             1449498   1458435    37
+```
+
+Interpretation:
+
+The short quick-budget experiment favored `no-starter` on both seeds by the
+policy ordering, and one `no-starter` audit came back clean even though the
+winner's primary flags still showed AVALANCHE. `no-crossover` improved average
+deep score versus default but did not win these two seeds. Refresh policies were
+identical at this 50-generation budget because no stagnation refresh fired, so
+longer generation budgets are needed to evaluate refresh strength.
+
+Commit hash:
+
+- Pending until the milestone commit is created.

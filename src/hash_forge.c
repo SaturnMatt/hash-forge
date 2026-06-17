@@ -155,6 +155,8 @@ typedef struct RunOptions {
     int no_refresh;
     int no_champions;
     int no_crossover;
+    uint64_t refresh_window;
+    uint32_t refresh_immigrants;
 } RunOptions;
 
 typedef struct RunReport {
@@ -171,6 +173,8 @@ typedef struct RunReport {
     uint32_t last_unique_candidates;
     uint32_t champion_starters_loaded;
     uint32_t crossover_children_per_generation;
+    uint64_t refresh_window;
+    uint32_t refresh_immigrants;
     struct ImprovementLog {
         struct ImprovementEvent {
             uint64_t run_generation;
@@ -192,6 +196,54 @@ typedef struct RunReport {
         uint64_t omitted_count;
     } improvements;
 } RunReport;
+
+typedef struct PolicyOptions {
+    uint64_t seed;
+    uint64_t seeds[MAX_COMPARE_SEEDS];
+    uint64_t generations;
+    uint32_t seed_count;
+    uint32_t threads;
+    QualityMode quality;
+    int have_threads;
+    int have_seed_list;
+} PolicyOptions;
+
+typedef struct PolicyResult {
+    const char *policy;
+    uint64_t seed;
+    uint64_t best_id;
+    uint8_t source;
+    int64_t quick_score;
+    int64_t deep_score;
+    int64_t audit_worst;
+    uint32_t flags;
+    uint32_t audit_flags;
+    uint64_t total_candidates;
+    uint64_t run_generation;
+    uint64_t improvement_count;
+    uint64_t last_improvement_generation;
+    uint64_t stagnation_refreshes;
+    uint32_t last_unique_candidates;
+    uint32_t no_starter;
+    uint32_t no_refresh;
+    uint32_t no_crossover;
+    uint64_t refresh_window;
+    uint32_t refresh_immigrants;
+} PolicyResult;
+
+typedef struct PolicySummary {
+    const char *policy;
+    uint32_t trials;
+    uint32_t wins;
+    uint32_t clean_runs;
+    uint32_t clean_audits;
+    int64_t deep_total;
+    int64_t quick_total;
+    int64_t best_deep;
+    uint64_t total_candidates;
+    uint64_t last_improvement_total;
+    uint64_t refresh_total;
+} PolicySummary;
 
 typedef struct BenchOptions {
     uint64_t seed;
@@ -1674,8 +1726,8 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Compact starter candidates: `%u`\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(md, "- Champion starter candidates: `%u`\n", report->champion_starters_loaded);
-    fprintf(md, "- Stagnation refresh window: `%u` generations\n", options->no_refresh ? 0u : STAGNATION_REFRESH_GENERATIONS);
-    fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", options->no_refresh ? 0u : STAGNATION_IMMIGRANT_COUNT);
+    fprintf(md, "- Stagnation refresh window: `%llu` generations\n", (unsigned long long)report->refresh_window);
+    fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", report->refresh_window ? report->refresh_immigrants : 0u);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
     fprintf(md, "- Deep score cadence: every `%u` generations\n", deep_every_for_quality(options->quality));
     fprintf(md, "- Deep score top N: `%u`\n", deep_top_n_for_quality(options->quality));
@@ -1833,6 +1885,8 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- `out/latest_export_path.txt`: path to the latest archived C export\n");
     fprintf(md, "- `out/history.csv`: compact append-only run history\n");
     fprintf(md, "- `out/compare.md`: latest deterministic policy comparison report\n");
+    fprintf(md, "- `out/policy.md`: latest full policy comparison report\n");
+    fprintf(md, "- `out/policy.csv`: latest full policy comparison CSV\n");
     fprintf(md, "- `out/baselines.md`: latest established-hash baseline report\n");
     fprintf(md, "- `out/champions/*.hfch`: saved custom champion records\n");
     fprintf(md, "- `out/champions.md`: latest champion leaderboard\n");
@@ -1954,6 +2008,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "last_improvement_elapsed: %.3f\n", last_improvement ? last_improvement->elapsed_seconds : 0.0);
     fprintf(txt, "starter_candidates: %u\n", options->no_starter ? 0u : STARTER_COUNT);
     fprintf(txt, "stagnation_refresh_enabled: %s\n", options->no_refresh ? "no" : "yes");
+    fprintf(txt, "stagnation_refresh_window: %llu\n", (unsigned long long)report->refresh_window);
+    fprintf(txt, "stagnation_refresh_immigrants: %u\n", report->refresh_window ? report->refresh_immigrants : 0u);
     fprintf(txt, "champion_starters: %u\n", report->champion_starters_loaded);
     fprintf(txt, "crossover_children: %u\n", report->crossover_children_per_generation);
     fprintf(txt, "source: %s\n", candidate_source_name(candidate->source));
@@ -1977,7 +2033,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -1992,6 +2048,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)report->adaptive_random_immigrants,
                 options->no_starter ? 0u : STARTER_COUNT,
                 options->no_refresh ? "no" : "yes",
+                (unsigned long long)report->refresh_window,
+                report->refresh_window ? report->refresh_immigrants : 0u,
                 report->champion_starters_loaded,
                 candidate_source_name(candidate->source),
                 report->crossover_children_per_generation,
@@ -2691,6 +2749,16 @@ static uint32_t crossover_count_for_options(const RunOptions *options) {
     return options->no_crossover ? 0u : CROSSOVER_COUNT;
 }
 
+static uint64_t refresh_window_for_options(const RunOptions *options) {
+    if (options->no_refresh) return 0;
+    return options->refresh_window ? options->refresh_window : STAGNATION_REFRESH_GENERATIONS;
+}
+
+static uint32_t refresh_immigrants_for_options(const RunOptions *options) {
+    if (options->no_refresh) return IMMIGRANT_COUNT;
+    return options->refresh_immigrants ? options->refresh_immigrants : STAGNATION_IMMIGRANT_COUNT;
+}
+
 static void print_run_header(const RunOptions *options, uint32_t score_threads) {
     uint32_t crossover_count = crossover_count_for_options(options);
     printf("\n%s%sHash Forge run%s\n", c_bold(), c_cyan(), c_reset());
@@ -2892,6 +2960,8 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         ? choose_auto_thread_count(population, options->seed)
         : clamp_thread_count(options->threads, POPULATION_SIZE);
     uint32_t crossover_count = crossover_count_for_options(options);
+    uint64_t refresh_window = refresh_window_for_options(options);
+    uint32_t refresh_immigrants = refresh_immigrants_for_options(options);
     uint32_t deep_every = deep_every_for_quality(options->quality);
     uint32_t deep_top_n = deep_top_n_for_quality(options->quality);
     ScorePool score_pool;
@@ -2966,12 +3036,14 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
             if (uniqueness == 2) duplicate_random_replacements++;
         }
         uint32_t immigrant_count = IMMIGRANT_COUNT;
-        if (!options->no_refresh &&
+        if (refresh_window &&
             generation > last_improvement_generation &&
-            generation - last_improvement_generation >= STAGNATION_REFRESH_GENERATIONS) {
-            immigrant_count = STAGNATION_IMMIGRANT_COUNT;
+            generation - last_improvement_generation >= refresh_window) {
+            immigrant_count = refresh_immigrants;
             stagnation_refreshes++;
-            adaptive_random_immigrants += STAGNATION_IMMIGRANT_COUNT - IMMIGRANT_COUNT;
+            if (refresh_immigrants > IMMIGRANT_COUNT) {
+                adaptive_random_immigrants += refresh_immigrants - IMMIGRANT_COUNT;
+            }
             last_improvement_generation = generation;
         }
         uint32_t immigrant_start = POPULATION_SIZE > immigrant_count ? POPULATION_SIZE - immigrant_count : SURVIVOR_COUNT;
@@ -3033,6 +3105,8 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         last_unique_candidates,
         champion_starters_loaded,
         crossover_count,
+        refresh_window,
+        refresh_immigrants,
         improvements
     };
 
@@ -3239,6 +3313,301 @@ static int command_compare(const CompareOptions *options) {
            (long long)results[best_index].deep_score,
            results[best_index].flags);
     printf("  %soutput%s       %s\n", c_dim(), c_reset(), wrote ? "out/compare.md" : "export failed");
+    return wrote ? 0 : 1;
+}
+
+static int policy_result_better(const PolicyResult *a, const PolicyResult *b) {
+    uint32_t a_severity = fail_severity(a->flags);
+    uint32_t b_severity = fail_severity(b->flags);
+    if (a_severity != b_severity) return a_severity < b_severity;
+    uint32_t a_audit_severity = fail_severity(a->audit_flags);
+    uint32_t b_audit_severity = fail_severity(b->audit_flags);
+    if (a_audit_severity != b_audit_severity) return a_audit_severity < b_audit_severity;
+    if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score;
+    if (a->quick_score != b->quick_score) return a->quick_score > b->quick_score;
+    return a->total_candidates > b->total_candidates;
+}
+
+static int audit_policy_candidate(const Candidate *candidate, uint64_t run_seed, QualityMode quality, int64_t *worst_score, uint32_t *combined_flags) {
+    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
+    if (!scratch) return 0;
+    int64_t worst = INT64_MAX;
+    uint32_t flags = 0;
+    for (uint32_t i = 0; i < 3; i++) {
+        uint64_t audit_seed = mix_seed(run_seed, candidate->id, 2000u + i);
+        ScoreResult score = score_candidate(candidate, scratch, audit_seed, 1, quality);
+        if (score.score < worst) worst = score.score;
+        flags |= score.fail_flags;
+    }
+    free(scratch);
+    *worst_score = worst;
+    *combined_flags = flags;
+    return 1;
+}
+
+static int write_policy_outputs(const PolicyOptions *options, const PolicyResult *results, uint32_t result_count,
+                                const PolicySummary *summaries, uint32_t summary_count) {
+    ensure_out_dir();
+    FILE *csv = fopen("out/policy.csv", "wb");
+    if (!csv) {
+        fprintf(stderr, "failed to open out/policy.csv\n");
+        return 0;
+    }
+    fprintf(csv, "policy,seed,best_id,source,deep,quick,flags,audit_worst,audit_flags,total_candidates,run_generation,improvement_count,last_improvement_generation,last_unique,refreshes,no_starter,no_refresh,no_crossover,refresh_window,refresh_immigrants\n");
+    for (uint32_t i = 0; i < result_count; i++) {
+        fprintf(csv, "%s,%llu,%llx,%s,%lld,%lld,0x%x,%lld,0x%x,%llu,%llu,%llu,%llu,%u,%llu,%u,%u,%u,%llu,%u\n",
+                results[i].policy,
+                (unsigned long long)results[i].seed,
+                (unsigned long long)results[i].best_id,
+                candidate_source_name(results[i].source),
+                (long long)results[i].deep_score,
+                (long long)results[i].quick_score,
+                results[i].flags,
+                (long long)results[i].audit_worst,
+                results[i].audit_flags,
+                (unsigned long long)results[i].total_candidates,
+                (unsigned long long)results[i].run_generation,
+                (unsigned long long)results[i].improvement_count,
+                (unsigned long long)results[i].last_improvement_generation,
+                results[i].last_unique_candidates,
+                (unsigned long long)results[i].stagnation_refreshes,
+                results[i].no_starter,
+                results[i].no_refresh,
+                results[i].no_crossover,
+                (unsigned long long)results[i].refresh_window,
+                results[i].refresh_immigrants);
+    }
+    fclose(csv);
+
+    FILE *md = fopen("out/policy.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/policy.md\n");
+        return 0;
+    }
+
+    fprintf(md, "# hash-forge policy comparison\n\n");
+    fprintf(md, "## Settings\n\n");
+    fprintf(md, "- Seed count: `%u`\n", options->seed_count);
+    fprintf(md, "- Generations per trial: `%llu`\n", (unsigned long long)options->generations);
+    fprintf(md, "- Threads: `%u`\n", options->threads);
+    fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
+    fprintf(md, "- Champion starters: `disabled`\n\n");
+    fprintf(md, "Seeds:");
+    for (uint32_t i = 0; i < options->seed_count; i++) {
+        uint64_t seed = options->have_seed_list ? options->seeds[i] : options->seed + i;
+        fprintf(md, " `%llu`", (unsigned long long)seed);
+    }
+    fprintf(md, "\n\n");
+
+    fprintf(md, "## Policy definitions\n\n");
+    fprintf(md, "| policy | starter | refresh | crossover | refresh window | refresh immigrants |\n");
+    fprintf(md, "|---|---|---|---|---:|---:|\n");
+    for (uint32_t i = 0; i < summary_count; i++) {
+        const PolicyResult *sample = NULL;
+        for (uint32_t j = 0; j < result_count; j++) {
+            if (strcmp(results[j].policy, summaries[i].policy) == 0) {
+                sample = &results[j];
+                break;
+            }
+        }
+        if (!sample) continue;
+        fprintf(md, "| %s | %s | %s | %s | %llu | %u |\n",
+                summaries[i].policy,
+                sample->no_starter ? "off" : "on",
+                sample->no_refresh ? "off" : "on",
+                sample->no_crossover ? "off" : "on",
+                (unsigned long long)sample->refresh_window,
+                sample->refresh_immigrants);
+    }
+
+    fprintf(md, "\n## Policy summary\n\n");
+    fprintf(md, "| policy | trials | wins | clean winners | clean audits | avg deep | best deep | avg total candidates | avg last improvement gen | avg refreshes |\n");
+    fprintf(md, "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (uint32_t i = 0; i < summary_count; i++) {
+        const PolicySummary *s = &summaries[i];
+        int64_t avg_deep = s->trials ? s->deep_total / (int64_t)s->trials : 0;
+        uint64_t avg_total = s->trials ? s->total_candidates / s->trials : 0;
+        uint64_t avg_last_improvement = s->trials ? s->last_improvement_total / s->trials : 0;
+        uint64_t avg_refresh = s->trials ? s->refresh_total / s->trials : 0;
+        fprintf(md, "| %s | %u | %u | %u | %u | %lld | %lld | %llu | %llu | %llu |\n",
+                s->policy,
+                s->trials,
+                s->wins,
+                s->clean_runs,
+                s->clean_audits,
+                (long long)avg_deep,
+                (long long)s->best_deep,
+                (unsigned long long)avg_total,
+                (unsigned long long)avg_last_improvement,
+                (unsigned long long)avg_refresh);
+    }
+
+    fprintf(md, "\n## Trial results\n\n");
+    fprintf(md, "| policy | seed | deep | quick | flags | audit worst | audit flags | candidates | improvements | last improvement gen | refreshes | unique | source | best id |\n");
+    fprintf(md, "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---|---|\n");
+    for (uint32_t i = 0; i < result_count; i++) {
+        fprintf(md, "| %s | %llu | %lld | %lld | `0x%x` (",
+                results[i].policy,
+                (unsigned long long)results[i].seed,
+                (long long)results[i].deep_score,
+                (long long)results[i].quick_score,
+                results[i].flags);
+        print_fail_flags(md, results[i].flags);
+        fprintf(md, ") | %lld | `0x%x` (",
+                (long long)results[i].audit_worst,
+                results[i].audit_flags);
+        print_fail_flags(md, results[i].audit_flags);
+        fprintf(md, ") | %llu | %llu | %llu | %llu | %u | %s | `%llx` |\n",
+                (unsigned long long)results[i].total_candidates,
+                (unsigned long long)results[i].improvement_count,
+                (unsigned long long)results[i].last_improvement_generation,
+                (unsigned long long)results[i].stagnation_refreshes,
+                results[i].last_unique_candidates,
+                candidate_source_name(results[i].source),
+                (unsigned long long)results[i].best_id);
+    }
+
+    fprintf(md, "\n## Interpretation\n\n");
+    fprintf(md, "Every policy is run against the same deterministic seed budget and generation count. ");
+    fprintf(md, "Use clean flags first, audit flags second, then deep score and convergence telemetry when choosing longer experiments.\n");
+    fclose(md);
+    return 1;
+}
+
+static int command_policy(const PolicyOptions *options) {
+    static const struct {
+        const char *name;
+        int no_starter;
+        int no_refresh;
+        int no_crossover;
+        uint64_t refresh_window;
+        uint32_t refresh_immigrants;
+    } policies[] = {
+        { "default", 0, 0, 0, 0, 0 },
+        { "no-crossover", 0, 0, 1, 0, 0 },
+        { "no-starter", 1, 0, 0, 0, 0 },
+        { "no-refresh", 0, 1, 0, 0, 0 },
+        { "bare", 1, 1, 1, 0, 0 },
+        { "refresh-strong", 0, 0, 0, 20, 96 }
+    };
+    enum { POLICY_COUNT = sizeof(policies) / sizeof(policies[0]) };
+
+    PolicyResult results[MAX_COMPARE_SEEDS * POLICY_COUNT];
+    PolicySummary summaries[POLICY_COUNT];
+    uint32_t result_count = 0;
+    uint32_t best_index = 0;
+    memset(summaries, 0, sizeof(summaries));
+    for (uint32_t i = 0; i < POLICY_COUNT; i++) {
+        summaries[i].policy = policies[i].name;
+        summaries[i].best_deep = INT64_MIN;
+    }
+
+    printf("\n%s%sHash Forge policy comparison%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %sseeds%s        %u\n", c_dim(), c_reset(), options->seed_count);
+    printf("  %sgenerations%s  %llu\n", c_dim(), c_reset(), (unsigned long long)options->generations);
+    printf("  %sthreads%s      %u\n", c_dim(), c_reset(), options->threads);
+    printf("  %squality%s      %s\n", c_dim(), c_reset(), quality_name(options->quality));
+    printf("  %schampions%s    disabled\n\n", c_dim(), c_reset());
+    printf("%s%-15s  %8s  %12s  %12s  %5s  %12s  %5s  %8s  %16s%s\n",
+           c_dim(), "policy", "seed", "deep", "quick", "flags", "audit worst", "aflag", "improve", "best id", c_reset());
+
+    for (uint32_t s = 0; s < options->seed_count; s++) {
+        uint64_t seed = options->have_seed_list ? options->seeds[s] : options->seed + s;
+        uint32_t seed_best_start = result_count;
+        uint32_t seed_best_index = result_count;
+        for (uint32_t p = 0; p < POLICY_COUNT; p++) {
+            RunOptions run_options;
+            memset(&run_options, 0, sizeof(run_options));
+            run_options.seed = seed;
+            run_options.generations = options->generations;
+            run_options.threads = options->threads;
+            run_options.quality = options->quality;
+            run_options.have_seed = 1;
+            run_options.have_threads = 1;
+            run_options.no_starter = policies[p].no_starter;
+            run_options.no_refresh = policies[p].no_refresh;
+            run_options.no_crossover = policies[p].no_crossover;
+            run_options.no_champions = 1;
+            run_options.refresh_window = policies[p].refresh_window;
+            run_options.refresh_immigrants = policies[p].refresh_immigrants;
+
+            Candidate best;
+            RunReport report;
+            if (run_evolution(&run_options, 0, &best, &report) != 0) {
+                return 1;
+            }
+
+            int64_t audit_worst = INT64_MIN;
+            uint32_t audit_flags = 0xffffffffu;
+            if (!audit_policy_candidate(&best, seed, options->quality, &audit_worst, &audit_flags)) {
+                audit_worst = best.deep_score;
+                audit_flags = best.fail_flags;
+            }
+            const struct ImprovementEvent *last_improvement = last_improvement_event(&report.improvements);
+
+            PolicyResult *result = &results[result_count++];
+            result->policy = policies[p].name;
+            result->seed = seed;
+            result->best_id = best.id;
+            result->source = best.source;
+            result->quick_score = best.quick_score;
+            result->deep_score = best.deep_score;
+            result->flags = best.fail_flags;
+            result->audit_worst = audit_worst;
+            result->audit_flags = audit_flags;
+            result->total_candidates = report.quick_candidates_evaluated + report.deep_candidates_evaluated;
+            result->run_generation = report.run_generation;
+            result->improvement_count = report.improvements.total_count;
+            result->last_improvement_generation = last_improvement ? last_improvement->run_generation : 0u;
+            result->stagnation_refreshes = report.stagnation_refreshes;
+            result->last_unique_candidates = report.last_unique_candidates;
+            result->no_starter = policies[p].no_starter ? 1u : 0u;
+            result->no_refresh = policies[p].no_refresh ? 1u : 0u;
+            result->no_crossover = policies[p].no_crossover ? 1u : 0u;
+            result->refresh_window = report.refresh_window;
+            result->refresh_immigrants = report.refresh_window ? report.refresh_immigrants : 0u;
+
+            if (result_count == 1 || policy_result_better(result, &results[best_index])) {
+                best_index = result_count - 1;
+            }
+            if (result_count == seed_best_start + 1 || policy_result_better(result, &results[seed_best_index])) {
+                seed_best_index = result_count - 1;
+            }
+
+            summaries[p].trials++;
+            summaries[p].clean_runs += result->flags == 0 ? 1u : 0u;
+            summaries[p].clean_audits += result->audit_flags == 0 ? 1u : 0u;
+            summaries[p].deep_total += result->deep_score;
+            summaries[p].quick_total += result->quick_score;
+            if (result->deep_score > summaries[p].best_deep) summaries[p].best_deep = result->deep_score;
+            summaries[p].total_candidates += result->total_candidates;
+            summaries[p].last_improvement_total += result->last_improvement_generation;
+            summaries[p].refresh_total += result->stagnation_refreshes;
+
+            printf("%-15s  %8llu  %12lld  %12lld  0x%02x  %12lld  0x%02x  %8llu  %s%016llx%s\n",
+                   result->policy,
+                   (unsigned long long)result->seed,
+                   (long long)result->deep_score,
+                   (long long)result->quick_score,
+                   result->flags,
+                   (long long)result->audit_worst,
+                   result->audit_flags,
+                   (unsigned long long)result->improvement_count,
+                   c_cyan(), (unsigned long long)result->best_id, c_reset());
+        }
+        summaries[seed_best_index - seed_best_start].wins++;
+    }
+
+    int wrote = write_policy_outputs(options, results, result_count, summaries, POLICY_COUNT);
+    printf("\n%s%sPolicy complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %sbest policy%s  %s seed %llu deep %lld flags 0x%x audit 0x%x\n",
+           c_dim(), c_reset(),
+           results[best_index].policy,
+           (unsigned long long)results[best_index].seed,
+           (long long)results[best_index].deep_score,
+           results[best_index].flags,
+           results[best_index].audit_flags);
+    printf("  %soutput%s       %s\n", c_dim(), c_reset(), wrote ? "out/policy.md, out/policy.csv" : "export failed");
     return wrote ? 0 : 1;
 }
 
@@ -3757,6 +4126,7 @@ static void print_usage(const char *program) {
     printf("  %s self-test\n", program);
     printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
+    printf("  %s policy [--seed <u64>] [--seeds <n>|--seed-list <csv>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s baselines [--seed <u64>] [--quality <quick|normal|deep>] [--quick|--deep]\n", program);
     printf("  %s champions\n", program);
@@ -3945,6 +4315,91 @@ static int parse_compare_options(int argc, char **argv, CompareOptions *options)
     return 1;
 }
 
+static int parse_policy_seed_list(const char *text, PolicyOptions *options) {
+    const char *at = text;
+    options->seed_count = 0;
+    while (*at) {
+        char *end = NULL;
+        unsigned long long seed = strtoull(at, &end, 0);
+        if (end == at) return 0;
+        if (options->seed_count >= MAX_COMPARE_SEEDS) {
+            fprintf(stderr, "too many --seed-list entries; max is %u\n", MAX_COMPARE_SEEDS);
+            return 0;
+        }
+        options->seeds[options->seed_count++] = (uint64_t)seed;
+        if (*end == '\0') break;
+        if (*end != ',') return 0;
+        at = end + 1;
+    }
+    if (options->seed_count == 0) return 0;
+    options->seed = options->seeds[0];
+    options->have_seed_list = 1;
+    return 1;
+}
+
+static int parse_policy_options(int argc, char **argv, PolicyOptions *options) {
+    memset(options, 0, sizeof(*options));
+    options->seed = 123;
+    options->seed_count = 3;
+    options->generations = 25;
+    options->quality = QUALITY_NORMAL;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->seed)) {
+                fprintf(stderr, "invalid --seed value\n");
+                return 0;
+            }
+            if (!options->have_seed_list && options->seed_count == 0) options->seed_count = 3;
+        } else if (strcmp(argv[i], "--seeds") == 0 && i + 1 < argc) {
+            uint64_t seed_count = 0;
+            if (!parse_u64(argv[++i], &seed_count) || seed_count == 0 || seed_count > MAX_COMPARE_SEEDS) {
+                fprintf(stderr, "invalid --seeds value\n");
+                return 0;
+            }
+            if (!options->have_seed_list) {
+                options->seed_count = (uint32_t)seed_count;
+            }
+        } else if (strcmp(argv[i], "--seed-list") == 0 && i + 1 < argc) {
+            if (!parse_policy_seed_list(argv[++i], options)) {
+                fprintf(stderr, "invalid --seed-list value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--generations") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->generations) || options->generations == 0) {
+                fprintf(stderr, "invalid --generations value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            uint64_t threads = 0;
+            if (!parse_u64(argv[++i], &threads) || threads == 0) {
+                fprintf(stderr, "invalid --threads value\n");
+                return 0;
+            }
+            options->threads = clamp_thread_count(threads, POPULATION_SIZE);
+            options->have_threads = 1;
+        } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
+            const char *quality = argv[++i];
+            if (strcmp(quality, "quick") == 0) {
+                options->quality = QUALITY_QUICK;
+            } else if (strcmp(quality, "normal") == 0) {
+                options->quality = QUALITY_NORMAL;
+            } else if (strcmp(quality, "deep") == 0) {
+                options->quality = QUALITY_DEEP;
+            } else {
+                fprintf(stderr, "invalid --quality value\n");
+                return 0;
+            }
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    if (!options->have_threads) {
+        options->threads = default_thread_count();
+    }
+    return 1;
+}
+
 static int parse_baseline_options(int argc, char **argv, BaselineOptions *options) {
     memset(options, 0, sizeof(*options));
     options->seed = 123;
@@ -4044,6 +4499,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_compare(&options);
+    }
+
+    if (strcmp(argv[1], "policy") == 0) {
+        PolicyOptions options;
+        if (!parse_policy_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_policy(&options);
     }
 
     if (strcmp(argv[1], "baselines") == 0) {

@@ -8,6 +8,8 @@ $summaryPath = Join-Path $root "out\summary.txt"
 $reportPath = Join-Path $root "out\report.md"
 $benchPath = Join-Path $root "out\bench.md"
 $comparePath = Join-Path $root "out\compare.md"
+$policyPath = Join-Path $root "out\policy.md"
+$policyCsvPath = Join-Path $root "out\policy.csv"
 $baselinesPath = Join-Path $root "out\baselines.md"
 $championsPath = Join-Path $root "out\champions.md"
 $championsDir = Join-Path $root "out\champions"
@@ -151,6 +153,8 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("out/runs/*.c")) "report missing archived C export reference"
     Assert ($report -match [regex]::Escape("out/history.csv")) "report missing history CSV reference"
     Assert ($report -match [regex]::Escape("out/improvements.csv")) "report missing improvements CSV reference"
+    Assert ($report -match [regex]::Escape("out/policy.md")) "report missing policy report reference"
+    Assert ($report -match [regex]::Escape("out/policy.csv")) "report missing policy CSV reference"
     Assert ($report -match [regex]::Escape("out/baselines.md")) "report missing baselines report reference"
     Assert ($report -match "VM instruction listing") "report missing instruction listing"
     Assert ($report -match [regex]::Escape("out/best.c")) "report missing best.c reference"
@@ -249,6 +253,25 @@ function Assert-CompareReport {
     Assert ($compare -match "bare") "compare report missing bare policy"
 }
 
+function Assert-PolicyReport {
+    Assert (Test-Path $policyPath) "missing out\policy.md"
+    Assert (Test-Path $policyCsvPath) "missing out\policy.csv"
+    $policy = Get-Content $policyPath -Raw
+    Assert ($policy -match "hash-forge policy comparison") "policy report missing title"
+    Assert ($policy -match "Policy definitions") "policy report missing definitions"
+    Assert ($policy -match "Policy summary") "policy report missing summary"
+    Assert ($policy -match "Trial results") "policy report missing trials"
+    foreach ($name in @("default", "no-crossover", "no-starter", "no-refresh", "bare", "refresh-strong")) {
+        Assert ($policy -match $name) "policy report missing $name"
+    }
+    Assert ($policy -match "clean audits") "policy report missing clean audit counts"
+    Assert ($policy -match "avg last improvement gen") "policy report missing improvement aggregate"
+    Assert ($policy -match "Champion starters: ``disabled``") "policy report missing champion fairness setting"
+    $csv = Get-Content $policyCsvPath
+    Assert ($csv[0] -match "policy,seed,best_id,source,deep,quick") "policy CSV missing expected header"
+    Assert ($csv.Count -ge 7) "policy CSV missing policy rows"
+}
+
 function Assert-BaselinesReport {
     Assert (Test-Path $baselinesPath) "missing out\baselines.md"
     $baselines = Get-Content $baselinesPath -Raw
@@ -321,6 +344,8 @@ $badBench = Invoke-Captured $exe @("bench") @(2)
 Assert ($badBench.Output -match "bench requires --seconds") "missing bench seconds error text changed"
 $badCompare = Invoke-Captured $exe @("compare", "--seeds", "0") @(2)
 Assert ($badCompare.Output -match "invalid --seeds") "bad-compare-seeds error text changed"
+$badPolicy = Invoke-Captured $exe @("policy", "--seed-list", "x") @(2)
+Assert ($badPolicy.Output -match "invalid --seed-list") "bad-policy-seed-list error text changed"
 $badBaselines = Invoke-Captured $exe @("baselines", "--quality", "maximum") @(2)
 Assert ($badBaselines.Output -match "invalid --quality") "bad-baselines-quality error text changed"
 $badChampions = Invoke-Captured $exe @("champions", "--top", "1") @(2)
@@ -394,6 +419,17 @@ $compareResult = Invoke-Captured $exe @("compare", "--seed", "123", "--seeds", "
 Assert ($compareResult.Output -match "Compare complete") "compare output missing completion"
 Assert ($compareResult.Output -match "best policy") "compare output missing best policy"
 Assert-CompareReport
+
+$policyResult = Invoke-Captured $exe @("policy", "--seed", "123", "--seeds", "1", "--generations", "3", "--threads", "1", "--quality", "quick")
+Assert ($policyResult.Output -match "Policy complete") "policy output missing completion"
+Assert ($policyResult.Output -match "best policy") "policy output missing best policy"
+Assert-PolicyReport
+$policyCsvFirst = Get-Content $policyCsvPath -Raw
+$policySeedListResult = Invoke-Captured $exe @("policy", "--seed-list", "123", "--generations", "3", "--threads", "1", "--quality", "quick")
+Assert ($policySeedListResult.Output -match "Policy complete") "policy seed-list output missing completion"
+Assert-PolicyReport
+$policyCsvSecond = Get-Content $policyCsvPath -Raw
+Assert ($policyCsvFirst -eq $policyCsvSecond) "policy seed range and seed-list results differ"
 
 $baselinesResult = Invoke-Captured $exe @("baselines", "--seed", "123", "--quality", "quick", "--quick")
 Assert ($baselinesResult.Output -match "Baselines complete") "baselines output missing completion"

@@ -58,6 +58,8 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-champions
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-crossover --no-champions
 .\build\hash-forge.exe compare --seed 123 --seeds 3 --generations 25 --threads 4
+.\build\hash-forge.exe policy --seed 9201 --seeds 5 --generations 1000 --threads 32 --quality deep
+.\build\hash-forge.exe policy --seed-list 9201,9202,9203 --generations 1000 --threads 32 --quality deep
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 .\build\hash-forge.exe baselines --seed 123 --quality deep
 .\build\hash-forge.exe champions
@@ -108,6 +110,8 @@ out\history.md
 out\summary.txt
 out\bench.md
 out\compare.md
+out\policy.md
+out\policy.csv
 out\baselines.md
 out\champions\*.hfch
 out\champions.md
@@ -150,6 +154,11 @@ choosing thread counts, not hash quality scores.
 `compare` runs deterministic short A/B policy trials for default, no-starter,
 no-refresh, and bare settings across one or more seeds, prints aggregate wins
 and averages, then writes `out\compare.md`.
+
+`policy` runs a fuller deterministic same-budget policy comparison across the
+same seed list and fixed generation count. It compares default, no-crossover,
+no-starter, no-refresh, bare, and refresh-strong policies with champion starters
+disabled for fairness, then writes `out\policy.md` and `out\policy.csv`.
 
 `baselines` scores established non-cryptographic 64-bit reference mixers with
 the same zero, collision, bucket, avalanche, differential, and sensitivity
