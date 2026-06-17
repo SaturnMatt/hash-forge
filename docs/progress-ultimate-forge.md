@@ -479,7 +479,7 @@ Commit hash:
 
 ## Milestone 5: Best deep seen export
 
-Status: in progress.
+Status: completed.
 
 Intended files:
 
@@ -601,4 +601,4 @@ strongest deep-scored candidate instead of losing it to quick-ranking churn.
 
 Commit:
 
-- pending
+- `450d8c0 Track best deep export`
