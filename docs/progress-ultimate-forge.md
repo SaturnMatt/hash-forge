@@ -475,4 +475,4 @@ candidates are not counted as starter-lineage by this cap.
 
 Commit hash:
 
-- Pending until the milestone commit is created.
+- `c9a1bfc Add starter survivor cap`
