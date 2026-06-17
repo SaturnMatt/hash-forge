@@ -77,6 +77,8 @@ function Read-RunSummary {
     $championMatch = [regex]::Match($line, 'champion_starters=(\d+)')
     $sourceMatch = [regex]::Match($line, 'source=(\w+)')
     $crossoverMatch = [regex]::Match($line, 'crossover_children=(\d+)')
+    $noveltyLaneMatch = [regex]::Match($line, 'novelty_lane=(\d+)')
+    $noveltyCandidatesMatch = [regex]::Match($line, 'novelty_candidates=(\d+)')
     $improvementMatch = [regex]::Match($line, 'improvement_count=(\d+)')
     $lastImprovementGenerationMatch = [regex]::Match($line, 'last_improvement_generation=(\d+)')
     $lastImprovementElapsedMatch = [regex]::Match($line, 'last_improvement_elapsed=([0-9.]+)')
@@ -99,6 +101,8 @@ function Read-RunSummary {
         ChampionStarters = if ($championMatch.Success) { [uint32]$championMatch.Groups[1].Value } else { 0 }
         Source = if ($sourceMatch.Success) { $sourceMatch.Groups[1].Value } else { "unknown" }
         CrossoverChildren = if ($crossoverMatch.Success) { [uint32]$crossoverMatch.Groups[1].Value } else { 16 }
+        NoveltyLane = if ($noveltyLaneMatch.Success) { [uint32]$noveltyLaneMatch.Groups[1].Value } else { 0 }
+        NoveltyCandidates = if ($noveltyCandidatesMatch.Success) { [uint64]$noveltyCandidatesMatch.Groups[1].Value } else { 0 }
         ImprovementCount = if ($improvementMatch.Success) { [uint64]$improvementMatch.Groups[1].Value } else { 0 }
         LastImprovementGeneration = if ($lastImprovementGenerationMatch.Success) { [uint64]$lastImprovementGenerationMatch.Groups[1].Value } else { 0 }
         LastImprovementElapsed = if ($lastImprovementElapsedMatch.Success) { [double]$lastImprovementElapsedMatch.Groups[1].Value } else { 0.0 }
@@ -127,6 +131,9 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Duplicate candidate repairs") "report missing duplicate repair count"
     Assert ($report -match "Stagnation refreshes") "report missing stagnation refresh count"
     Assert ($report -match "Extra adaptive random immigrants") "report missing adaptive immigrant count"
+    Assert ($report -match "Novelty telemetry") "report missing novelty telemetry"
+    Assert ($report -match [regex]::Escape("- Novelty children per generation: ``$($summary.NoveltyLane)``")) "report missing novelty lane"
+    Assert ($report -match [regex]::Escape("- Novelty candidates admitted: ``$($summary.NoveltyCandidates)``")) "report missing novelty candidate count"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)
     Assert ($report -match [regex]::Escape("- ID: ``$hexId``")) "report missing best id"
     Assert ($report -match "Source ancestry") "report missing source ancestry"
@@ -190,6 +197,8 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     Assert ($bestTxt -match "exported_instruction_count") "best.txt missing exported instruction count"
     Assert ($bestTxt -match "champion_starters") "best.txt missing champion starter count"
     Assert ($bestTxt -match "crossover_children") "best.txt missing crossover child count"
+    Assert ($bestTxt -match "novelty_lane") "best.txt missing novelty lane"
+    Assert ($bestTxt -match "novelty_candidates_admitted") "best.txt missing novelty admitted count"
     Assert ($bestTxt -match "improvement_count") "best.txt missing improvement count"
     Assert ($bestTxt -match "last_improvement_generation") "best.txt missing last improvement generation"
     Assert ($bestTxt -match "source:") "best.txt missing source"
@@ -261,7 +270,7 @@ function Assert-PolicyReport {
     Assert ($policy -match "Policy definitions") "policy report missing definitions"
     Assert ($policy -match "Policy summary") "policy report missing summary"
     Assert ($policy -match "Trial results") "policy report missing trials"
-    foreach ($name in @("default", "no-crossover", "no-starter", "no-refresh", "bare", "refresh-strong")) {
+    foreach ($name in @("default", "no-novelty", "no-crossover", "no-starter", "no-refresh", "bare", "refresh-strong")) {
         Assert ($policy -match $name) "policy report missing $name"
     }
     Assert ($policy -match "clean audits") "policy report missing clean audit counts"
@@ -269,7 +278,9 @@ function Assert-PolicyReport {
     Assert ($policy -match "Champion starters: ``disabled``") "policy report missing champion fairness setting"
     $csv = Get-Content $policyCsvPath
     Assert ($csv[0] -match "policy,seed,best_id,source,deep,quick") "policy CSV missing expected header"
-    Assert ($csv.Count -ge 7) "policy CSV missing policy rows"
+    Assert ($policy -match "novelty lane") "policy report missing novelty lane policy column"
+    Assert ($policy -match "novelty admitted") "policy report missing novelty admitted trial column"
+    Assert ($csv.Count -ge 8) "policy CSV missing policy rows"
 }
 
 function Assert-BaselinesReport {
@@ -400,6 +411,11 @@ Assert ($toggleReport -match [regex]::Escape("- Stagnation refresh window: ``0``
 $noCrossoverSummary = Invoke-RunAndReadSummary @("run", "--seed", "654", "--generations", "5", "--threads", "2", "--no-champions", "--no-crossover")
 Assert ($noCrossoverSummary.RunGeneration -eq 5) "no-crossover run did not complete 5 generations"
 Assert ($noCrossoverSummary.CrossoverChildren -eq 0) "no-crossover run reported $($noCrossoverSummary.CrossoverChildren) crossover children"
+
+$noNoveltySummary = Invoke-RunAndReadSummary @("run", "--seed", "654", "--generations", "5", "--threads", "2", "--no-champions", "--no-novelty")
+Assert ($noNoveltySummary.RunGeneration -eq 5) "no-novelty run did not complete 5 generations"
+Assert ($noNoveltySummary.NoveltyLane -eq 0) "no-novelty run reported $($noNoveltySummary.NoveltyLane) novelty children"
+Assert ($noNoveltySummary.NoveltyCandidates -eq 0) "no-novelty run admitted novelty candidates"
 
 $timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4", "--no-champions")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"

@@ -318,6 +318,7 @@ hash-forge run --seed 123 --seconds 60 --quality deep
 hash-forge run --seed 123 --generations 100 --no-starter --no-refresh
 hash-forge run --seed 123 --generations 100 --no-champions
 hash-forge run --seed 123 --generations 100 --no-crossover --no-champions
+hash-forge run --seed 123 --generations 100 --no-novelty --no-champions
 hash-forge compare --seed 123 --seeds 3 --generations 25 --threads 4
 hash-forge policy --seed 9201 --seeds 5 --generations 1000 --threads 32 --quality deep
 hash-forge policy --seed-list 9201,9202,9203 --generations 1000 --threads 32 --quality deep
@@ -343,16 +344,19 @@ and deep-score leader count. `normal` is the default.
 stagnation refresh for deterministic comparison runs.
 `--no-champions` disables loading saved custom champion hashes as starter
 material.
+`--no-novelty` and `--novelty-lane <n>` control the structural novelty lane.
+The default novelty lane reserves a small slice of each generation for children
+of structurally distinct non-survivor candidates.
 
 `compare` runs deterministic short policy trials for default, no-starter,
 no-refresh, and bare settings across one or more seeds. It should print a
 compact table with policy wins and averages, then write `out/compare.md`.
 
 `policy` runs a fuller deterministic same-budget policy comparison for default,
-no-crossover, no-starter, no-refresh, bare, and refresh-strong settings across a
-generated seed range or explicit comma-separated seed list. It should disable
-champion starters for fairness, print aggregate results, then write
-`out/policy.md` and `out/policy.csv`.
+no-novelty, no-crossover, no-starter, no-refresh, bare, and refresh-strong
+settings across a generated seed range or explicit comma-separated seed list. It
+should disable champion starters for fairness, print aggregate results, then
+write `out/policy.md` and `out/policy.csv`.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
@@ -425,8 +429,8 @@ best-candidate operator histogram and baseline comparison scores, including
 established non-cryptographic hash baselines. It should
 also include diversity telemetry: final scored-generation uniqueness, duplicate
 repairs, fresh random replacements, stagnation refreshes, and extra adaptive
-random immigrants, plus the number of champion starters loaded and the best
-candidate source ancestry. It should include an improvement timeline showing
+random immigrants, novelty-lane activity, plus the number of champion starters
+loaded and the best candidate source ancestry. It should include an improvement timeline showing
 each material best-candidate improvement with run generation, elapsed seconds,
 candidate source, quick/deep score state, fail flags, and total candidates
 evaluated so long-run convergence can be judged after the fact.

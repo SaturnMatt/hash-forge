@@ -25,6 +25,7 @@
 #define SURVIVOR_COUNT 32
 #define CROSSOVER_COUNT 16
 #define IMMIGRANT_COUNT 8
+#define DEFAULT_NOVELTY_LANE 16
 #define STARTER_COUNT 8
 #define STAGNATION_REFRESH_GENERATIONS 50
 #define STAGNATION_IMMIGRANT_COUNT 64
@@ -74,7 +75,8 @@ typedef enum QualityMode {
 typedef enum CandidateSource {
     SOURCE_RANDOM,
     SOURCE_STARTER,
-    SOURCE_CHAMPION
+    SOURCE_CHAMPION,
+    SOURCE_NOVELTY
 } CandidateSource;
 
 typedef enum ImprovementReason {
@@ -155,6 +157,9 @@ typedef struct RunOptions {
     int no_refresh;
     int no_champions;
     int no_crossover;
+    int no_novelty;
+    int have_novelty_lane;
+    uint32_t novelty_lane;
     uint64_t refresh_window;
     uint32_t refresh_immigrants;
 } RunOptions;
@@ -173,6 +178,10 @@ typedef struct RunReport {
     uint32_t last_unique_candidates;
     uint32_t champion_starters_loaded;
     uint32_t crossover_children_per_generation;
+    uint32_t novelty_lane;
+    uint64_t novelty_candidates_admitted;
+    uint64_t last_best_novelty_score;
+    uint64_t last_avg_novelty_score;
     uint64_t refresh_window;
     uint32_t refresh_immigrants;
     struct ImprovementLog {
@@ -227,6 +236,10 @@ typedef struct PolicyResult {
     uint32_t no_starter;
     uint32_t no_refresh;
     uint32_t no_crossover;
+    uint32_t no_novelty;
+    uint32_t novelty_lane;
+    uint64_t novelty_candidates_admitted;
+    uint64_t last_best_novelty_score;
     uint64_t refresh_window;
     uint32_t refresh_immigrants;
 } PolicyResult;
@@ -487,6 +500,7 @@ static const char *candidate_source_name(uint8_t source) {
     switch (source) {
     case SOURCE_STARTER: return "starter";
     case SOURCE_CHAMPION: return "champion";
+    case SOURCE_NOVELTY: return "novelty";
     case SOURCE_RANDOM:
     default: return "random";
     }
@@ -743,6 +757,35 @@ static uint32_t fail_severity(uint32_t flags) {
     if (flags & FAIL_AVALANCHE) severity += 100;
     if (flags & FAIL_COLLISION) severity += 50;
     return severity;
+}
+
+static uint64_t candidate_structure_fingerprint(const Candidate *candidate) {
+    uint64_t h = 0x6a09e667f3bcc909ull;
+    h = hash_u64_step(h, candidate->instruction_count);
+    h = hash_u64_step(h, candidate->source);
+    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
+        const Instruction *ins = &candidate->instructions[i];
+        uint64_t shape = (uint64_t)ins->op |
+            ((uint64_t)ins->dst << 8) |
+            ((uint64_t)ins->operand_kind << 16) |
+            ((uint64_t)ins->operand_reg << 24) |
+            ((uint64_t)ins->shift << 32);
+        if (ins->dst == 2) shape ^= 0x9e3779b97f4a7c15ull;
+        if (ins->operand_kind == OPERAND_CONST) shape ^= splitmix64_mix(ins->constant);
+        h = hash_u64_step(h, shape);
+    }
+    return h;
+}
+
+static uint64_t candidate_novelty_score(const Candidate *candidate, const Candidate *survivors, uint32_t survivor_count) {
+    uint64_t fp = candidate_structure_fingerprint(candidate);
+    uint32_t best_distance = 0;
+    for (uint32_t i = 0; i < survivor_count; i++) {
+        uint64_t other = candidate_structure_fingerprint(&survivors[i]);
+        uint32_t distance = (uint32_t)popcount64(fp ^ other);
+        if (distance > best_distance) best_distance = distance;
+    }
+    return (uint64_t)best_distance;
 }
 
 static uint64_t random_constant(Rng *rng) {
@@ -1719,9 +1762,16 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Extra adaptive random immigrants: `%llu`\n\n",
             (unsigned long long)report->adaptive_random_immigrants);
 
+    fprintf(md, "## Novelty telemetry\n\n");
+    fprintf(md, "- Novelty children per generation: `%u`\n", report->novelty_lane);
+    fprintf(md, "- Novelty candidates admitted: `%llu`\n", (unsigned long long)report->novelty_candidates_admitted);
+    fprintf(md, "- Last-generation best novelty score: `%llu`\n", (unsigned long long)report->last_best_novelty_score);
+    fprintf(md, "- Last-generation average novelty score: `%llu`\n\n", (unsigned long long)report->last_avg_novelty_score);
+
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
+    fprintf(md, "- Novelty children per generation: `%u`\n", report->novelty_lane);
     fprintf(md, "- Crossover children per generation: `%u`\n", report->crossover_children_per_generation);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Compact starter candidates: `%u`\n", options->no_starter ? 0u : STARTER_COUNT);
@@ -2000,6 +2050,10 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "duplicate_random_replacements: %llu\n", (unsigned long long)report->duplicate_random_replacements);
     fprintf(txt, "stagnation_refreshes: %llu\n", (unsigned long long)report->stagnation_refreshes);
     fprintf(txt, "adaptive_random_immigrants: %llu\n", (unsigned long long)report->adaptive_random_immigrants);
+    fprintf(txt, "novelty_lane: %u\n", report->novelty_lane);
+    fprintf(txt, "novelty_candidates_admitted: %llu\n", (unsigned long long)report->novelty_candidates_admitted);
+    fprintf(txt, "last_best_novelty_score: %llu\n", (unsigned long long)report->last_best_novelty_score);
+    fprintf(txt, "last_avg_novelty_score: %llu\n", (unsigned long long)report->last_avg_novelty_score);
     fprintf(txt, "improvement_count: %llu\n", (unsigned long long)report->improvements.total_count);
     fprintf(txt, "improvement_events_kept: %u\n", report->improvements.count);
     fprintf(txt, "improvement_events_omitted: %llu\n", (unsigned long long)report->improvements.omitted_count);
@@ -2033,7 +2087,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu novelty_lane=%u novelty_candidates=%llu last_best_novelty=%llu last_avg_novelty=%llu starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -2046,6 +2100,10 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)report->duplicate_random_replacements,
                 (unsigned long long)report->stagnation_refreshes,
                 (unsigned long long)report->adaptive_random_immigrants,
+                report->novelty_lane,
+                (unsigned long long)report->novelty_candidates_admitted,
+                (unsigned long long)report->last_best_novelty_score,
+                (unsigned long long)report->last_avg_novelty_score,
                 options->no_starter ? 0u : STARTER_COUNT,
                 options->no_refresh ? "no" : "yes",
                 (unsigned long long)report->refresh_window,
@@ -2749,6 +2807,11 @@ static uint32_t crossover_count_for_options(const RunOptions *options) {
     return options->no_crossover ? 0u : CROSSOVER_COUNT;
 }
 
+static uint32_t novelty_lane_for_options(const RunOptions *options) {
+    if (options->no_novelty) return 0;
+    return options->have_novelty_lane ? options->novelty_lane : DEFAULT_NOVELTY_LANE;
+}
+
 static uint64_t refresh_window_for_options(const RunOptions *options) {
     if (options->no_refresh) return 0;
     return options->refresh_window ? options->refresh_window : STAGNATION_REFRESH_GENERATIONS;
@@ -2761,6 +2824,7 @@ static uint32_t refresh_immigrants_for_options(const RunOptions *options) {
 
 static void print_run_header(const RunOptions *options, uint32_t score_threads) {
     uint32_t crossover_count = crossover_count_for_options(options);
+    uint32_t novelty_lane = novelty_lane_for_options(options);
     printf("\n%s%sHash Forge run%s\n", c_bold(), c_cyan(), c_reset());
     printf("  %sseed%s         %llu\n", c_dim(), c_reset(), (unsigned long long)options->seed);
     printf("  %sgenerations%s  ", c_dim(), c_reset());
@@ -2773,8 +2837,8 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
     printf("  %sthreads%s      %u scoring worker%s%s\n",
            c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s",
            options->auto_threads ? " (auto)" : "");
-    printf("  %spopulation%s   %u candidates, %u survivors, %u crossover, %u immigrants\n",
-           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, crossover_count, IMMIGRANT_COUNT);
+    printf("  %spopulation%s   %u candidates, %u survivors, %u novelty, %u crossover, %u immigrants\n",
+           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, novelty_lane, crossover_count, IMMIGRANT_COUNT);
     printf("  %schampions%s    %s\n", c_dim(), c_reset(), options->no_champions ? "disabled" : "enabled");
     printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
            c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
@@ -2846,6 +2910,12 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sstagnation refresh%s  %llu (%llu extra immigrants)\n", c_dim(), c_reset(),
            (unsigned long long)report->stagnation_refreshes,
            (unsigned long long)report->adaptive_random_immigrants);
+    printf("  %snovelty lane%s       %u (%llu admitted, last best %llu avg %llu)\n",
+           c_dim(), c_reset(),
+           report->novelty_lane,
+           (unsigned long long)report->novelty_candidates_admitted,
+           (unsigned long long)report->last_best_novelty_score,
+           (unsigned long long)report->last_avg_novelty_score);
     printf("  %simprovements%s       %llu", c_dim(), c_reset(),
            (unsigned long long)report->improvements.total_count);
     if (last_improvement) {
@@ -2954,12 +3024,16 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
     uint64_t duplicate_random_replacements = 0;
     uint64_t stagnation_refreshes = 0;
     uint64_t adaptive_random_immigrants = 0;
+    uint64_t novelty_candidates_admitted = 0;
+    uint64_t last_best_novelty_score = 0;
+    uint64_t last_avg_novelty_score = 0;
     uint64_t last_improvement_generation = 0;
     uint32_t last_unique_candidates = POPULATION_SIZE;
     uint32_t score_threads = options->auto_threads
         ? choose_auto_thread_count(population, options->seed)
         : clamp_thread_count(options->threads, POPULATION_SIZE);
     uint32_t crossover_count = crossover_count_for_options(options);
+    uint32_t configured_novelty_lane = novelty_lane_for_options(options);
     uint64_t refresh_window = refresh_window_for_options(options);
     uint32_t refresh_immigrants = refresh_immigrants_for_options(options);
     uint32_t deep_every = deep_every_for_quality(options->quality);
@@ -3048,9 +3122,62 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         }
         uint32_t immigrant_start = POPULATION_SIZE > immigrant_count ? POPULATION_SIZE - immigrant_count : SURVIVOR_COUNT;
         if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
-        uint32_t crossover_start = immigrant_start > crossover_count ? immigrant_start - crossover_count : SURVIVOR_COUNT;
-        if (crossover_start < SURVIVOR_COUNT) crossover_start = SURVIVOR_COUNT;
-        for (uint32_t i = SURVIVOR_COUNT; i < crossover_start; i++) {
+        uint32_t available_child_slots = immigrant_start > SURVIVOR_COUNT ? immigrant_start - SURVIVOR_COUNT : 0u;
+        uint32_t crossover_slots = crossover_count < available_child_slots ? crossover_count : available_child_slots;
+        uint32_t novelty_limit = available_child_slots > crossover_slots ? available_child_slots - crossover_slots : 0u;
+        uint32_t novelty_count = configured_novelty_lane < novelty_limit ? configured_novelty_lane : novelty_limit;
+        uint32_t novelty_start = SURVIVOR_COUNT;
+        uint32_t novelty_end = novelty_start + novelty_count;
+        uint32_t crossover_start = immigrant_start - crossover_slots;
+        if (crossover_start < novelty_end) crossover_start = novelty_end;
+
+        last_best_novelty_score = 0;
+        last_avg_novelty_score = 0;
+        uint64_t novelty_score_total = 0;
+        uint32_t novelty_score_count = 0;
+        uint32_t selected_novelty_parents[POPULATION_SIZE];
+        uint32_t selected_novelty_count = 0;
+        for (uint32_t i = novelty_start; i < novelty_end; i++) {
+            uint32_t best_parent = POPULATION_SIZE;
+            uint64_t best_novelty = 0;
+            for (uint32_t p = SURVIVOR_COUNT; p < POPULATION_SIZE; p++) {
+                int already_selected = 0;
+                for (uint32_t s = 0; s < selected_novelty_count; s++) {
+                    if (selected_novelty_parents[s] == p) {
+                        already_selected = 1;
+                        break;
+                    }
+                }
+                if (already_selected) continue;
+                uint64_t novelty = candidate_novelty_score(&population[p], population, SURVIVOR_COUNT);
+                if (best_parent == POPULATION_SIZE ||
+                    novelty > best_novelty ||
+                    (novelty == best_novelty && compare_candidates(&population[p], &population[best_parent]) < 0)) {
+                    best_parent = p;
+                    best_novelty = novelty;
+                }
+            }
+            if (best_parent == POPULATION_SIZE) {
+                best_parent = SURVIVOR_COUNT + rng_range(&rng, POPULATION_SIZE - SURVIVOR_COUNT);
+                best_novelty = candidate_novelty_score(&population[best_parent], population, SURVIVOR_COUNT);
+            }
+            selected_novelty_parents[selected_novelty_count++] = best_parent;
+            mutate_candidate(&next[i], &population[best_parent], &rng);
+            next[i].source = SOURCE_NOVELTY;
+            int uniqueness = ensure_unique_candidate(&next[i], next, i, &rng);
+            if (uniqueness) duplicate_repairs++;
+            if (uniqueness == 2) duplicate_random_replacements++;
+            next[i].source = SOURCE_NOVELTY;
+            novelty_candidates_admitted++;
+            novelty_score_total += best_novelty;
+            novelty_score_count++;
+            if (best_novelty > last_best_novelty_score) last_best_novelty_score = best_novelty;
+        }
+        if (novelty_score_count) {
+            last_avg_novelty_score = novelty_score_total / novelty_score_count;
+        }
+
+        for (uint32_t i = novelty_end; i < crossover_start; i++) {
             uint32_t r = rng_range(&rng, SURVIVOR_COUNT * SURVIVOR_COUNT);
             uint32_t parent_index = r / SURVIVOR_COUNT;
             if (parent_index >= SURVIVOR_COUNT) parent_index = SURVIVOR_COUNT - 1;
@@ -3105,6 +3232,10 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         last_unique_candidates,
         champion_starters_loaded,
         crossover_count,
+        configured_novelty_lane,
+        novelty_candidates_admitted,
+        last_best_novelty_score,
+        last_avg_novelty_score,
         refresh_window,
         refresh_immigrants,
         improvements
@@ -3353,9 +3484,9 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
         fprintf(stderr, "failed to open out/policy.csv\n");
         return 0;
     }
-    fprintf(csv, "policy,seed,best_id,source,deep,quick,flags,audit_worst,audit_flags,total_candidates,run_generation,improvement_count,last_improvement_generation,last_unique,refreshes,no_starter,no_refresh,no_crossover,refresh_window,refresh_immigrants\n");
+    fprintf(csv, "policy,seed,best_id,source,deep,quick,flags,audit_worst,audit_flags,total_candidates,run_generation,improvement_count,last_improvement_generation,last_unique,refreshes,no_starter,no_refresh,no_crossover,no_novelty,novelty_lane,novelty_candidates,last_best_novelty,refresh_window,refresh_immigrants\n");
     for (uint32_t i = 0; i < result_count; i++) {
-        fprintf(csv, "%s,%llu,%llx,%s,%lld,%lld,0x%x,%lld,0x%x,%llu,%llu,%llu,%llu,%u,%llu,%u,%u,%u,%llu,%u\n",
+        fprintf(csv, "%s,%llu,%llx,%s,%lld,%lld,0x%x,%lld,0x%x,%llu,%llu,%llu,%llu,%u,%llu,%u,%u,%u,%u,%u,%llu,%llu,%llu,%u\n",
                 results[i].policy,
                 (unsigned long long)results[i].seed,
                 (unsigned long long)results[i].best_id,
@@ -3374,6 +3505,10 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
                 results[i].no_starter,
                 results[i].no_refresh,
                 results[i].no_crossover,
+                results[i].no_novelty,
+                results[i].novelty_lane,
+                (unsigned long long)results[i].novelty_candidates_admitted,
+                (unsigned long long)results[i].last_best_novelty_score,
                 (unsigned long long)results[i].refresh_window,
                 results[i].refresh_immigrants);
     }
@@ -3400,8 +3535,8 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
     fprintf(md, "\n\n");
 
     fprintf(md, "## Policy definitions\n\n");
-    fprintf(md, "| policy | starter | refresh | crossover | refresh window | refresh immigrants |\n");
-    fprintf(md, "|---|---|---|---|---:|---:|\n");
+    fprintf(md, "| policy | starter | refresh | crossover | novelty lane | refresh window | refresh immigrants |\n");
+    fprintf(md, "|---|---|---|---|---:|---:|---:|\n");
     for (uint32_t i = 0; i < summary_count; i++) {
         const PolicyResult *sample = NULL;
         for (uint32_t j = 0; j < result_count; j++) {
@@ -3411,11 +3546,12 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
             }
         }
         if (!sample) continue;
-        fprintf(md, "| %s | %s | %s | %s | %llu | %u |\n",
+        fprintf(md, "| %s | %s | %s | %s | %u | %llu | %u |\n",
                 summaries[i].policy,
                 sample->no_starter ? "off" : "on",
                 sample->no_refresh ? "off" : "on",
                 sample->no_crossover ? "off" : "on",
+                sample->novelty_lane,
                 (unsigned long long)sample->refresh_window,
                 sample->refresh_immigrants);
     }
@@ -3443,8 +3579,8 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
     }
 
     fprintf(md, "\n## Trial results\n\n");
-    fprintf(md, "| policy | seed | deep | quick | flags | audit worst | audit flags | candidates | improvements | last improvement gen | refreshes | unique | source | best id |\n");
-    fprintf(md, "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---|---|\n");
+    fprintf(md, "| policy | seed | deep | quick | flags | audit worst | audit flags | candidates | improvements | last improvement gen | novelty admitted | best novelty | refreshes | unique | source | best id |\n");
+    fprintf(md, "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n");
     for (uint32_t i = 0; i < result_count; i++) {
         fprintf(md, "| %s | %llu | %lld | %lld | `0x%x` (",
                 results[i].policy,
@@ -3457,10 +3593,12 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
                 (long long)results[i].audit_worst,
                 results[i].audit_flags);
         print_fail_flags(md, results[i].audit_flags);
-        fprintf(md, ") | %llu | %llu | %llu | %llu | %u | %s | `%llx` |\n",
+        fprintf(md, ") | %llu | %llu | %llu | %llu | %llu | %llu | %u | %s | `%llx` |\n",
                 (unsigned long long)results[i].total_candidates,
                 (unsigned long long)results[i].improvement_count,
                 (unsigned long long)results[i].last_improvement_generation,
+                (unsigned long long)results[i].novelty_candidates_admitted,
+                (unsigned long long)results[i].last_best_novelty_score,
                 (unsigned long long)results[i].stagnation_refreshes,
                 results[i].last_unique_candidates,
                 candidate_source_name(results[i].source),
@@ -3480,15 +3618,18 @@ static int command_policy(const PolicyOptions *options) {
         int no_starter;
         int no_refresh;
         int no_crossover;
+        int no_novelty;
+        uint32_t novelty_lane;
         uint64_t refresh_window;
         uint32_t refresh_immigrants;
     } policies[] = {
-        { "default", 0, 0, 0, 0, 0 },
-        { "no-crossover", 0, 0, 1, 0, 0 },
-        { "no-starter", 1, 0, 0, 0, 0 },
-        { "no-refresh", 0, 1, 0, 0, 0 },
-        { "bare", 1, 1, 1, 0, 0 },
-        { "refresh-strong", 0, 0, 0, 20, 96 }
+        { "default", 0, 0, 0, 0, 0, 0, 0 },
+        { "no-novelty", 0, 0, 0, 1, 0, 0, 0 },
+        { "no-crossover", 0, 0, 1, 0, 0, 0, 0 },
+        { "no-starter", 1, 0, 0, 0, 0, 0, 0 },
+        { "no-refresh", 0, 1, 0, 0, 0, 0, 0 },
+        { "bare", 1, 1, 1, 1, 0, 0, 0 },
+        { "refresh-strong", 0, 0, 0, 0, 0, 20, 96 }
     };
     enum { POLICY_COUNT = sizeof(policies) / sizeof(policies[0]) };
 
@@ -3527,6 +3668,9 @@ static int command_policy(const PolicyOptions *options) {
             run_options.no_starter = policies[p].no_starter;
             run_options.no_refresh = policies[p].no_refresh;
             run_options.no_crossover = policies[p].no_crossover;
+            run_options.no_novelty = policies[p].no_novelty;
+            run_options.novelty_lane = policies[p].novelty_lane;
+            run_options.have_novelty_lane = policies[p].no_novelty || policies[p].novelty_lane;
             run_options.no_champions = 1;
             run_options.refresh_window = policies[p].refresh_window;
             run_options.refresh_immigrants = policies[p].refresh_immigrants;
@@ -3564,6 +3708,10 @@ static int command_policy(const PolicyOptions *options) {
             result->no_starter = policies[p].no_starter ? 1u : 0u;
             result->no_refresh = policies[p].no_refresh ? 1u : 0u;
             result->no_crossover = policies[p].no_crossover ? 1u : 0u;
+            result->no_novelty = policies[p].no_novelty ? 1u : 0u;
+            result->novelty_lane = report.novelty_lane;
+            result->novelty_candidates_admitted = report.novelty_candidates_admitted;
+            result->last_best_novelty_score = report.last_best_novelty_score;
             result->refresh_window = report.refresh_window;
             result->refresh_immigrants = report.refresh_window ? report.refresh_immigrants : 0u;
 
@@ -4124,7 +4272,7 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover] [--no-novelty|--novelty-lane <n>]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s policy [--seed <u64>] [--seeds <n>|--seed-list <csv>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
@@ -4190,6 +4338,19 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             options->no_champions = 1;
         } else if (strcmp(argv[i], "--no-crossover") == 0) {
             options->no_crossover = 1;
+        } else if (strcmp(argv[i], "--no-novelty") == 0) {
+            options->no_novelty = 1;
+            options->have_novelty_lane = 1;
+            options->novelty_lane = 0;
+        } else if (strcmp(argv[i], "--novelty-lane") == 0 && i + 1 < argc) {
+            uint64_t novelty_lane = 0;
+            if (!parse_u64(argv[++i], &novelty_lane) || novelty_lane > POPULATION_SIZE) {
+                fprintf(stderr, "invalid --novelty-lane value\n");
+                return 0;
+            }
+            options->novelty_lane = (uint32_t)novelty_lane;
+            options->have_novelty_lane = 1;
+            options->no_novelty = novelty_lane == 0;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;
