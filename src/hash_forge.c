@@ -184,6 +184,17 @@ typedef struct CompareResult {
     uint32_t last_unique_candidates;
 } CompareResult;
 
+typedef struct CompareSummary {
+    const char *policy;
+    uint32_t trials;
+    uint32_t wins;
+    uint32_t clean_runs;
+    int64_t deep_total;
+    int64_t quick_total;
+    uint64_t unique_total;
+    uint64_t refresh_total;
+} CompareSummary;
+
 typedef struct HistoryRow {
     long long unix_time;
     uint64_t seed;
@@ -2245,7 +2256,7 @@ static int compare_result_better(const CompareResult *a, const CompareResult *b)
     return a->total_candidates > b->total_candidates;
 }
 
-static int write_compare_report(const CompareOptions *options, const CompareResult *results, uint32_t result_count) {
+static int write_compare_report(const CompareOptions *options, const CompareResult *results, uint32_t result_count, const CompareSummary *summaries, uint32_t summary_count) {
     ensure_out_dir();
     FILE *md = fopen("out/compare.md", "wb");
     if (!md) {
@@ -2261,7 +2272,27 @@ static int write_compare_report(const CompareOptions *options, const CompareResu
     fprintf(md, "- Threads: `%u`\n", options->threads);
     fprintf(md, "- Quality: `%s`\n\n", quality_name(options->quality));
 
-    fprintf(md, "## Results\n\n");
+    fprintf(md, "## Policy summary\n\n");
+    fprintf(md, "| policy | trials | wins | clean runs | avg deep | avg quick | avg unique | avg refreshes |\n");
+    fprintf(md, "|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (uint32_t i = 0; i < summary_count; i++) {
+        const CompareSummary *s = &summaries[i];
+        int64_t avg_deep = s->trials ? s->deep_total / (int64_t)s->trials : 0;
+        int64_t avg_quick = s->trials ? s->quick_total / (int64_t)s->trials : 0;
+        uint64_t avg_unique = s->trials ? s->unique_total / s->trials : 0;
+        uint64_t avg_refresh = s->trials ? s->refresh_total / s->trials : 0;
+        fprintf(md, "| %s | %u | %u | %u | %lld | %lld | %llu | %llu |\n",
+                s->policy,
+                s->trials,
+                s->wins,
+                s->clean_runs,
+                (long long)avg_deep,
+                (long long)avg_quick,
+                (unsigned long long)avg_unique,
+                (unsigned long long)avg_refresh);
+    }
+
+    fprintf(md, "\n## Trial results\n\n");
     fprintf(md, "| policy | seed | deep | quick | flags | flag names | total candidates | refreshes | unique last gen | best id |\n");
     fprintf(md, "|---|---:|---:|---:|---|---|---:|---:|---:|---|\n");
     for (uint32_t i = 0; i < result_count; i++) {
@@ -2298,8 +2329,13 @@ static int command_compare(const CompareOptions *options) {
     };
 
     CompareResult results[MAX_COMPARE_SEEDS * 4];
+    CompareSummary summaries[4];
     uint32_t result_count = 0;
     uint32_t best_index = 0;
+    memset(summaries, 0, sizeof(summaries));
+    for (uint32_t p = 0; p < sizeof(policies) / sizeof(policies[0]); p++) {
+        summaries[p].policy = policies[p].name;
+    }
 
     printf("\n%s%sHash Forge policy compare%s\n", c_bold(), c_cyan(), c_reset());
     printf("  %sseeds%s        %llu..%llu\n", c_dim(), c_reset(),
@@ -2312,6 +2348,8 @@ static int command_compare(const CompareOptions *options) {
            c_dim(), "policy", "seed", "deep", "quick", "flags", "candidates", "unique", "best id", c_reset());
 
     for (uint32_t s = 0; s < options->seed_count; s++) {
+        uint32_t seed_best_start = result_count;
+        uint32_t seed_best_index = result_count;
         for (uint32_t p = 0; p < sizeof(policies) / sizeof(policies[0]); p++) {
             RunOptions run_options;
             memset(&run_options, 0, sizeof(run_options));
@@ -2343,6 +2381,16 @@ static int command_compare(const CompareOptions *options) {
             if (result_count == 1 || compare_result_better(result, &results[best_index])) {
                 best_index = result_count - 1;
             }
+            if (result_count == seed_best_start + 1 || compare_result_better(result, &results[seed_best_index])) {
+                seed_best_index = result_count - 1;
+            }
+
+            summaries[p].trials++;
+            summaries[p].clean_runs += result->flags == 0 ? 1u : 0u;
+            summaries[p].deep_total += result->deep_score;
+            summaries[p].quick_total += result->quick_score;
+            summaries[p].unique_total += result->last_unique_candidates;
+            summaries[p].refresh_total += result->stagnation_refreshes;
 
             printf("%-11s  %8llu  %12lld  %12lld  0x%02x  %10llu  %8u  %s%016llx%s\n",
                    result->policy,
@@ -2354,9 +2402,26 @@ static int command_compare(const CompareOptions *options) {
                    result->last_unique_candidates,
                    c_cyan(), (unsigned long long)result->best_id, c_reset());
         }
+        summaries[seed_best_index - seed_best_start].wins++;
     }
 
-    int wrote = write_compare_report(options, results, result_count);
+    printf("\n%s%-11s  %6s  %6s  %6s  %12s  %12s  %8s%s\n",
+           c_dim(), "policy", "trials", "wins", "clean", "avg deep", "avg quick", "unique", c_reset());
+    for (uint32_t i = 0; i < sizeof(policies) / sizeof(policies[0]); i++) {
+        int64_t avg_deep = summaries[i].trials ? summaries[i].deep_total / (int64_t)summaries[i].trials : 0;
+        int64_t avg_quick = summaries[i].trials ? summaries[i].quick_total / (int64_t)summaries[i].trials : 0;
+        uint64_t avg_unique = summaries[i].trials ? summaries[i].unique_total / summaries[i].trials : 0;
+        printf("%-11s  %6u  %6u  %6u  %12lld  %12lld  %8llu\n",
+               summaries[i].policy,
+               summaries[i].trials,
+               summaries[i].wins,
+               summaries[i].clean_runs,
+               (long long)avg_deep,
+               (long long)avg_quick,
+               (unsigned long long)avg_unique);
+    }
+
+    int wrote = write_compare_report(options, results, result_count, summaries, (uint32_t)(sizeof(policies) / sizeof(policies[0])));
     printf("\n%s%sCompare complete%s\n", c_bold(), c_green(), c_reset());
     printf("  %sbest policy%s  %s seed %llu deep %lld flags 0x%x\n",
            c_dim(), c_reset(),

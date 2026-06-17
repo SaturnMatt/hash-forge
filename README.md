@@ -128,8 +128,8 @@ thread counts and quality modes, then writes `out\bench.md`. Benchmark rates
 are machine-local guidance for choosing thread counts, not hash quality scores.
 
 `compare` runs deterministic short A/B policy trials for default, no-starter,
-no-refresh, and bare settings across one or more seeds, then writes
-`out\compare.md`.
+no-refresh, and bare settings across one or more seeds, prints aggregate wins
+and averages, then writes `out\compare.md`.
 
 ## Tests
 

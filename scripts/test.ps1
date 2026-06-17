@@ -191,6 +191,10 @@ function Assert-CompareReport {
     $compare = Get-Content $comparePath -Raw
     Assert ($compare -match "hash-forge policy comparison") "compare report missing title"
     Assert ($compare -match "Generations per trial") "compare report missing generation setting"
+    Assert ($compare -match "Policy summary") "compare report missing policy summary"
+    Assert ($compare -match "avg deep") "compare report missing aggregate deep score"
+    Assert ($compare -match "wins") "compare report missing win counts"
+    Assert ($compare -match "Trial results") "compare report missing trial results"
     Assert ($compare -match "default") "compare report missing default policy"
     Assert ($compare -match "no-starter") "compare report missing no-starter policy"
     Assert ($compare -match "no-refresh") "compare report missing no-refresh policy"

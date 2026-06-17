@@ -324,7 +324,7 @@ stagnation refresh for deterministic comparison runs.
 
 `compare` runs deterministic short policy trials for default, no-starter,
 no-refresh, and bare settings across one or more seeds. It should print a
-compact table and write `out/compare.md`.
+compact table with policy wins and averages, then write `out/compare.md`.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
