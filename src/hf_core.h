@@ -339,6 +339,18 @@ typedef struct HistoryOptions {
     uint32_t top;
 } HistoryOptions;
 
+typedef struct ArtifactOptions {
+    char out_dir[260];
+} ArtifactOptions;
+
+typedef struct PruneOptions {
+    char out_dir[260];
+    uint32_t keep_runs;
+    uint32_t keep_days;
+    int dry_run;
+    int yes;
+} PruneOptions;
+
 typedef struct CompareOptions {
     uint64_t seed;
     uint64_t generations;
@@ -472,6 +484,8 @@ int command_bench(const BenchOptions *options);
 int command_champions(void);
 int command_compare(const CompareOptions *options);
 int command_history(const HistoryOptions *options);
+int command_artifacts(const ArtifactOptions *options);
+int command_prune(const PruneOptions *options);
 int command_policy(const PolicyOptions *options);
 int candidate_is_valid(const Candidate *candidate);
 int ensure_out_dir(void);

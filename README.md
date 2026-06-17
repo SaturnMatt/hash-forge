@@ -79,6 +79,9 @@ src\hf_modes.c    compare, policy, bench, baselines, champions, and history
 .\build\hash-forge.exe baselines --seed 123 --quality deep
 .\build\hash-forge.exe champions
 .\build\hash-forge.exe history --top 10
+.\build\hash-forge.exe artifacts
+.\build\hash-forge.exe prune --dry-run
+.\build\hash-forge.exe prune --keep-runs 200 --keep-days 14 --yes
 .\build\hash-forge.exe export-best
 ```
 
@@ -136,6 +139,8 @@ out\policy.csv
 out\baselines.md
 out\champions\*.hfch
 out\champions.md
+out\artifacts.md
+out\prune-plan.md
 ```
 
 `out\best.c` is standalone C containing the exported winner. Export removes
@@ -197,6 +202,15 @@ same ordering used by selection, and writes `out\champions.md`. Champion records
 include a scoring fingerprint derived from established baseline scores. If that
 fingerprint changes, champion loading and `champions` automatically rescore
 saved records before using them.
+
+`artifacts` prints a read-only inventory of `out\`, including run archive
+pairs, orphan reports/exports, total bytes, champion count, history rows,
+latest pointers, and protected artifact count. It writes `out\artifacts.md`.
+
+`prune` previews archive cleanup by default and writes `out\prune-plan.md`.
+Real deletion requires `--yes`. Pruning only considers archive report/export
+pairs under `out\runs\`, keeps protected champion/latest artifacts, refuses
+paths outside `out\`, and preserves report/export pairs together.
 
 ## Tests
 

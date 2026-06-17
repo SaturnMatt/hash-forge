@@ -992,3 +992,560 @@ int command_history(const HistoryOptions *options) {
     return wrote ? 0 : 1;
 }
 
+#define MAX_ARTIFACT_GROUPS 8192
+#define MAX_PROTECTED_ARTIFACTS 512
+
+typedef struct ArtifactGroup {
+    char stem[320];
+    char md_path[360];
+    char c_path[360];
+    int has_md;
+    int has_c;
+    uint64_t bytes;
+    FILETIME newest;
+    int protected_group;
+    int retained;
+    char reason[128];
+} ArtifactGroup;
+
+typedef struct ArtifactSet {
+    char paths[MAX_PROTECTED_ARTIFACTS][360];
+    char reasons[MAX_PROTECTED_ARTIFACTS][128];
+    uint32_t count;
+} ArtifactSet;
+
+typedef struct ArtifactInventory {
+    uint64_t total_files;
+    uint64_t total_bytes;
+    uint32_t run_files;
+    uint32_t complete_pairs;
+    uint32_t orphan_reports;
+    uint32_t orphan_exports;
+    uint32_t champion_count;
+    uint32_t history_rows;
+    uint32_t protected_count;
+    char latest_report[360];
+    char latest_export[360];
+} ArtifactInventory;
+
+static void copy_text(char *dst, size_t size, const char *src) {
+    if (!size) return;
+    if (!src) src = "";
+    strncpy(dst, src, size - 1);
+    dst[size - 1] = '\0';
+}
+
+static void normalize_path(char *path) {
+    for (char *p = path; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+}
+
+static int has_suffix(const char *text, const char *suffix) {
+    size_t text_len = strlen(text);
+    size_t suffix_len = strlen(suffix);
+    return text_len >= suffix_len && _stricmp(text + text_len - suffix_len, suffix) == 0;
+}
+
+static int join_artifact_path(char *out, size_t size, const char *a, const char *b) {
+    int written = snprintf(out, size, "%s/%s", a, b);
+    if (written < 0 || (size_t)written >= size) return 0;
+    normalize_path(out);
+    return 1;
+}
+
+static int full_path_normalized(const char *path, char *out, size_t size) {
+    DWORD written = GetFullPathNameA(path, (DWORD)size, out, NULL);
+    if (written == 0 || written >= size) return 0;
+    normalize_path(out);
+    return 1;
+}
+
+static int artifact_root_is_safe(const char *out_dir) {
+    char root[360];
+    char requested[360];
+    if (!full_path_normalized("out", root, sizeof(root))) return 0;
+    if (!full_path_normalized(out_dir, requested, sizeof(requested))) return 0;
+    size_t root_len = strlen(root);
+    if (_strnicmp(root, requested, root_len) != 0) return 0;
+    return requested[root_len] == '\0' || requested[root_len] == '/';
+}
+
+static int artifact_path_is_safe(const char *path) {
+    char root[360];
+    char requested[360];
+    if (!full_path_normalized("out", root, sizeof(root))) return 0;
+    if (!full_path_normalized(path, requested, sizeof(requested))) return 0;
+    size_t root_len = strlen(root);
+    if (_strnicmp(root, requested, root_len) != 0) return 0;
+    return requested[root_len] == '\0' || requested[root_len] == '/';
+}
+
+static uint64_t filetime_to_u64(FILETIME ft) {
+    ULARGE_INTEGER value;
+    value.LowPart = ft.dwLowDateTime;
+    value.HighPart = ft.dwHighDateTime;
+    return value.QuadPart;
+}
+
+static uint64_t now_filetime_u64(void) {
+    FILETIME now;
+    GetSystemTimeAsFileTime(&now);
+    return filetime_to_u64(now);
+}
+
+static int artifact_file_info(const char *path, uint64_t *size, FILETIME *mtime) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data)) return 0;
+    if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return 0;
+    if (size) {
+        ULARGE_INTEGER value;
+        value.LowPart = data.nFileSizeLow;
+        value.HighPart = data.nFileSizeHigh;
+        *size = value.QuadPart;
+    }
+    if (mtime) *mtime = data.ftLastWriteTime;
+    return 1;
+}
+
+static void scan_artifact_tree(const char *dir, ArtifactInventory *inventory) {
+    char pattern[360];
+    if (!join_artifact_path(pattern, sizeof(pattern), dir, "*")) return;
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) continue;
+        char path[360];
+        if (!join_artifact_path(path, sizeof(path), dir, data.cFileName)) continue;
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            scan_artifact_tree(path, inventory);
+        } else {
+            ULARGE_INTEGER size;
+            size.LowPart = data.nFileSizeLow;
+            size.HighPart = data.nFileSizeHigh;
+            inventory->total_files++;
+            inventory->total_bytes += size.QuadPart;
+        }
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+}
+
+static uint32_t count_history_rows_in_dir(const char *out_dir) {
+    char path[360];
+    if (!join_artifact_path(path, sizeof(path), out_dir, "history.csv")) return 0;
+    FILE *file = fopen(path, "rb");
+    if (!file) return 0;
+    char line[1024];
+    uint32_t rows = 0;
+    int first = 1;
+    while (fgets(line, sizeof(line), file)) {
+        if (first) {
+            first = 0;
+            continue;
+        }
+        rows++;
+    }
+    fclose(file);
+    return rows;
+}
+
+static void read_first_line_file(const char *path, char *out, size_t size) {
+    if (size) out[0] = '\0';
+    FILE *file = fopen(path, "rb");
+    if (!file) return;
+    if (fgets(out, (int)size, file)) {
+        out[strcspn(out, "\r\n")] = '\0';
+        normalize_path(out);
+    }
+    fclose(file);
+}
+
+static void add_protected_artifact(ArtifactSet *set, const char *path, const char *reason) {
+    if (!path || !path[0] || set->count >= MAX_PROTECTED_ARTIFACTS) return;
+    char normalized[360];
+    copy_text(normalized, sizeof(normalized), path);
+    normalize_path(normalized);
+    for (uint32_t i = 0; i < set->count; i++) {
+        if (_stricmp(set->paths[i], normalized) == 0) return;
+    }
+    copy_text(set->paths[set->count], sizeof(set->paths[set->count]), normalized);
+    copy_text(set->reasons[set->count], sizeof(set->reasons[set->count]), reason);
+    set->count++;
+}
+
+static int artifact_is_protected(const ArtifactSet *set, const char *path, const char **reason) {
+    char normalized[360];
+    copy_text(normalized, sizeof(normalized), path);
+    normalize_path(normalized);
+    for (uint32_t i = 0; i < set->count; i++) {
+        if (_stricmp(set->paths[i], normalized) == 0) {
+            if (reason) *reason = set->reasons[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void add_pair_for_path(ArtifactSet *set, const char *path, const char *reason) {
+    if (!path || !path[0]) return;
+    add_protected_artifact(set, path, reason);
+    char pair[360];
+    copy_text(pair, sizeof(pair), path);
+    char *dot = strrchr(pair, '.');
+    if (!dot) return;
+    if (_stricmp(dot, ".md") == 0) {
+        strcpy(dot, ".c");
+        add_protected_artifact(set, pair, reason);
+    } else if (_stricmp(dot, ".c") == 0) {
+        strcpy(dot, ".md");
+        add_protected_artifact(set, pair, reason);
+    }
+}
+
+static void collect_champion_references(const char *out_dir, ArtifactSet *protected_set, uint32_t *champion_count) {
+    char champion_dir[360];
+    if (!join_artifact_path(champion_dir, sizeof(champion_dir), out_dir, "champions")) return;
+    char pattern[360];
+    if (!join_artifact_path(pattern, sizeof(pattern), champion_dir, "*.hfch")) return;
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) return;
+    do {
+        char path[360];
+        if (!join_artifact_path(path, sizeof(path), champion_dir, data.cFileName)) continue;
+        if (champion_count) (*champion_count)++;
+        add_protected_artifact(protected_set, path, "champion record");
+        FILE *file = fopen(path, "rb");
+        if (!file) continue;
+        char line[512];
+        while (fgets(line, sizeof(line), file)) {
+            if (strncmp(line, "source_report=", 14) == 0) {
+                char report[360];
+                copy_text(report, sizeof(report), line + 14);
+                report[strcspn(report, "\r\n")] = '\0';
+                normalize_path(report);
+                add_pair_for_path(protected_set, report, "champion source");
+                break;
+            }
+        }
+        fclose(file);
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+}
+
+static void collect_latest_references(const char *out_dir, ArtifactSet *protected_set, ArtifactInventory *inventory) {
+    char path[360];
+    if (join_artifact_path(path, sizeof(path), out_dir, "latest_report_path.txt")) {
+        add_protected_artifact(protected_set, path, "latest pointer");
+        read_first_line_file(path, inventory->latest_report, sizeof(inventory->latest_report));
+        add_pair_for_path(protected_set, inventory->latest_report, "latest report");
+    }
+    if (join_artifact_path(path, sizeof(path), out_dir, "latest_export_path.txt")) {
+        add_protected_artifact(protected_set, path, "latest pointer");
+        read_first_line_file(path, inventory->latest_export, sizeof(inventory->latest_export));
+        add_pair_for_path(protected_set, inventory->latest_export, "latest export");
+    }
+}
+
+static void collect_always_protected(const char *out_dir, ArtifactSet *protected_set) {
+    const char *names[] = {
+        "best.c", "best.txt", "report.md", "summary.txt", "history.csv",
+        "champions.md", "latest_report_path.txt", "latest_export_path.txt"
+    };
+    for (uint32_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        char path[360];
+        if (join_artifact_path(path, sizeof(path), out_dir, names[i])) {
+            add_protected_artifact(protected_set, path, "current artifact");
+        }
+    }
+}
+
+static int find_artifact_group(ArtifactGroup *groups, uint32_t count, const char *stem) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (_stricmp(groups[i].stem, stem) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static uint32_t collect_run_groups(const char *out_dir, ArtifactGroup *groups, uint32_t capacity, ArtifactInventory *inventory) {
+    char runs_dir[360];
+    if (!join_artifact_path(runs_dir, sizeof(runs_dir), out_dir, "runs")) return 0;
+    char pattern[360];
+    if (!join_artifact_path(pattern, sizeof(pattern), runs_dir, "*")) return 0;
+    WIN32_FIND_DATAA data;
+    HANDLE find = FindFirstFileA(pattern, &data);
+    if (find == INVALID_HANDLE_VALUE) return 0;
+    uint32_t count = 0;
+    do {
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (!has_suffix(data.cFileName, ".md") && !has_suffix(data.cFileName, ".c")) continue;
+        char stem[320];
+        copy_text(stem, sizeof(stem), data.cFileName);
+        char *dot = strrchr(stem, '.');
+        if (!dot) continue;
+        *dot = '\0';
+        int index = find_artifact_group(groups, count, stem);
+        if (index < 0) {
+            if (count >= capacity) continue;
+            index = (int)count++;
+            memset(&groups[index], 0, sizeof(groups[index]));
+            copy_text(groups[index].stem, sizeof(groups[index].stem), stem);
+        }
+        char path[360];
+        if (!join_artifact_path(path, sizeof(path), runs_dir, data.cFileName)) continue;
+        ULARGE_INTEGER size;
+        size.LowPart = data.nFileSizeLow;
+        size.HighPart = data.nFileSizeHigh;
+        groups[index].bytes += size.QuadPart;
+        if (CompareFileTime(&data.ftLastWriteTime, &groups[index].newest) > 0) {
+            groups[index].newest = data.ftLastWriteTime;
+        }
+        if (has_suffix(data.cFileName, ".md")) {
+            groups[index].has_md = 1;
+            copy_text(groups[index].md_path, sizeof(groups[index].md_path), path);
+        } else {
+            groups[index].has_c = 1;
+            copy_text(groups[index].c_path, sizeof(groups[index].c_path), path);
+        }
+        if (inventory) inventory->run_files++;
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+
+    if (inventory) {
+        for (uint32_t i = 0; i < count; i++) {
+            if (groups[i].has_md && groups[i].has_c) inventory->complete_pairs++;
+            else if (groups[i].has_md) inventory->orphan_reports++;
+            else if (groups[i].has_c) inventory->orphan_exports++;
+        }
+    }
+    return count;
+}
+
+static int compare_artifact_groups_newest(const void *a_ptr, const void *b_ptr) {
+    const ArtifactGroup *a = (const ArtifactGroup *)a_ptr;
+    const ArtifactGroup *b = (const ArtifactGroup *)b_ptr;
+    int cmp = CompareFileTime(&b->newest, &a->newest);
+    if (cmp != 0) return cmp;
+    return _stricmp(a->stem, b->stem);
+}
+
+static void mark_protected_groups(ArtifactGroup *groups, uint32_t count, const ArtifactSet *protected_set) {
+    for (uint32_t i = 0; i < count; i++) {
+        const char *reason = NULL;
+        if ((groups[i].has_md && artifact_is_protected(protected_set, groups[i].md_path, &reason)) ||
+            (groups[i].has_c && artifact_is_protected(protected_set, groups[i].c_path, &reason))) {
+            groups[i].protected_group = 1;
+            copy_text(groups[i].reason, sizeof(groups[i].reason), reason ? reason : "protected");
+        }
+    }
+}
+
+static void mark_retained_groups(ArtifactGroup *groups, uint32_t count, const PruneOptions *options) {
+    qsort(groups, count, sizeof(groups[0]), compare_artifact_groups_newest);
+    uint64_t now = now_filetime_u64();
+    uint64_t keep_ticks = (uint64_t)options->keep_days * 24ull * 60ull * 60ull * 10000000ull;
+    for (uint32_t i = 0; i < count; i++) {
+        if (groups[i].protected_group) {
+            groups[i].retained = 1;
+            continue;
+        }
+        if (i < options->keep_runs) {
+            groups[i].retained = 1;
+            copy_text(groups[i].reason, sizeof(groups[i].reason), "within keep-runs");
+            continue;
+        }
+        if (keep_ticks && now >= filetime_to_u64(groups[i].newest) &&
+            now - filetime_to_u64(groups[i].newest) <= keep_ticks) {
+            groups[i].retained = 1;
+            copy_text(groups[i].reason, sizeof(groups[i].reason), "within keep-days");
+        }
+    }
+}
+
+static void build_artifact_inventory(const char *out_dir, ArtifactInventory *inventory, ArtifactSet *protected_set,
+                                     ArtifactGroup *groups, uint32_t *group_count) {
+    memset(inventory, 0, sizeof(*inventory));
+    memset(protected_set, 0, sizeof(*protected_set));
+    strcpy(inventory->latest_report, "missing");
+    strcpy(inventory->latest_export, "missing");
+    collect_always_protected(out_dir, protected_set);
+    collect_latest_references(out_dir, protected_set, inventory);
+    collect_champion_references(out_dir, protected_set, &inventory->champion_count);
+    inventory->history_rows = count_history_rows_in_dir(out_dir);
+    scan_artifact_tree(out_dir, inventory);
+    *group_count = collect_run_groups(out_dir, groups, MAX_ARTIFACT_GROUPS, inventory);
+    mark_protected_groups(groups, *group_count, protected_set);
+    inventory->protected_count = protected_set->count;
+}
+
+static int write_artifacts_report(const char *out_dir, const ArtifactInventory *inventory) {
+    char path[360];
+    if (!join_artifact_path(path, sizeof(path), out_dir, "artifacts.md")) return 0;
+    FILE *md = fopen(path, "wb");
+    if (!md) return 0;
+    fprintf(md, "# hash-forge artifact inventory\n\n");
+    fprintf(md, "- Out dir: `%s`\n", out_dir);
+    fprintf(md, "- Total files: `%llu`\n", (unsigned long long)inventory->total_files);
+    fprintf(md, "- Total bytes: `%llu`\n", (unsigned long long)inventory->total_bytes);
+    fprintf(md, "- Run archive files: `%u`\n", inventory->run_files);
+    fprintf(md, "- Complete report/export pairs: `%u`\n", inventory->complete_pairs);
+    fprintf(md, "- Orphan reports: `%u`\n", inventory->orphan_reports);
+    fprintf(md, "- Orphan exports: `%u`\n", inventory->orphan_exports);
+    fprintf(md, "- Champion records: `%u`\n", inventory->champion_count);
+    fprintf(md, "- History rows: `%u`\n", inventory->history_rows);
+    fprintf(md, "- Latest report: `%s`\n", inventory->latest_report);
+    fprintf(md, "- Latest export: `%s`\n", inventory->latest_export);
+    fprintf(md, "- Protected artifacts: `%u`\n", inventory->protected_count);
+    fclose(md);
+    return 1;
+}
+
+int command_artifacts(const ArtifactOptions *options) {
+    if (!artifact_root_is_safe(options->out_dir)) {
+        fprintf(stderr, "artifact out-dir must be inside out/\n");
+        return 2;
+    }
+    ArtifactInventory inventory;
+    ArtifactSet protected_set;
+    ArtifactGroup *groups = (ArtifactGroup *)calloc(MAX_ARTIFACT_GROUPS, sizeof(*groups));
+    if (!groups) {
+        fprintf(stderr, "failed to allocate artifact groups\n");
+        return 1;
+    }
+    uint32_t group_count = 0;
+    build_artifact_inventory(options->out_dir, &inventory, &protected_set, groups, &group_count);
+    int wrote = write_artifacts_report(options->out_dir, &inventory);
+
+    printf("\n%s%sHash Forge artifacts%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %sout dir%s          %s\n", c_dim(), c_reset(), options->out_dir);
+    printf("  %stotal files%s      %llu\n", c_dim(), c_reset(), (unsigned long long)inventory.total_files);
+    printf("  %stotal bytes%s      %llu\n", c_dim(), c_reset(), (unsigned long long)inventory.total_bytes);
+    printf("  %srun files%s        %u\n", c_dim(), c_reset(), inventory.run_files);
+    printf("  %srun pairs%s        %u complete, %u report-only, %u export-only\n",
+           c_dim(), c_reset(), inventory.complete_pairs, inventory.orphan_reports, inventory.orphan_exports);
+    printf("  %schampions%s        %u\n", c_dim(), c_reset(), inventory.champion_count);
+    printf("  %shistory rows%s     %u\n", c_dim(), c_reset(), inventory.history_rows);
+    printf("  %slatest report%s    %s\n", c_dim(), c_reset(), inventory.latest_report);
+    printf("  %slatest export%s    %s\n", c_dim(), c_reset(), inventory.latest_export);
+    printf("  %sprotected%s        %u\n", c_dim(), c_reset(), inventory.protected_count);
+    printf("  %soutput%s           %s\n", c_dim(), c_reset(), wrote ? "out/artifacts.md" : "report skipped");
+
+    free(groups);
+    return 0;
+}
+
+static int write_prune_plan(const char *out_dir, const PruneOptions *options, const ArtifactGroup *groups,
+                            uint32_t group_count, uint32_t delete_groups, uint32_t delete_files, uint64_t delete_bytes) {
+    char path[360];
+    if (!join_artifact_path(path, sizeof(path), out_dir, "prune-plan.md")) return 0;
+    FILE *md = fopen(path, "wb");
+    if (!md) return 0;
+    fprintf(md, "# hash-forge prune plan\n\n");
+    fprintf(md, "- Out dir: `%s`\n", out_dir);
+    fprintf(md, "- Mode: `%s`\n", options->dry_run ? "dry-run" : "delete");
+    fprintf(md, "- Keep runs: `%u`\n", options->keep_runs);
+    fprintf(md, "- Keep days: `%u`\n", options->keep_days);
+    fprintf(md, "- Groups scanned: `%u`\n", group_count);
+    fprintf(md, "- Groups to delete: `%u`\n", delete_groups);
+    fprintf(md, "- Files to delete: `%u`\n", delete_files);
+    fprintf(md, "- Bytes to reclaim: `%llu`\n\n", (unsigned long long)delete_bytes);
+    fprintf(md, "| action | reason | report | export | bytes |\n");
+    fprintf(md, "|---|---|---|---|---:|\n");
+    for (uint32_t i = 0; i < group_count; i++) {
+        const ArtifactGroup *group = &groups[i];
+        const char *action = group->retained ? "keep" : "delete";
+        const char *reason = group->reason[0] ? group->reason : (group->retained ? "retained" : "outside retention");
+        fprintf(md, "| %s | %s | `%s` | `%s` | %llu |\n",
+                action,
+                reason,
+                group->has_md ? group->md_path : "",
+                group->has_c ? group->c_path : "",
+                (unsigned long long)group->bytes);
+    }
+    fclose(md);
+    return 1;
+}
+
+int command_prune(const PruneOptions *options) {
+    if (!artifact_root_is_safe(options->out_dir)) {
+        fprintf(stderr, "artifact out-dir must be inside out/\n");
+        return 2;
+    }
+    if (!options->dry_run && !options->yes) {
+        fprintf(stderr, "prune deletion requires --yes\n");
+        return 2;
+    }
+    ArtifactInventory inventory;
+    ArtifactSet protected_set;
+    ArtifactGroup *groups = (ArtifactGroup *)calloc(MAX_ARTIFACT_GROUPS, sizeof(*groups));
+    if (!groups) {
+        fprintf(stderr, "failed to allocate artifact groups\n");
+        return 1;
+    }
+    uint32_t group_count = 0;
+    build_artifact_inventory(options->out_dir, &inventory, &protected_set, groups, &group_count);
+    mark_retained_groups(groups, group_count, options);
+
+    uint32_t delete_groups = 0;
+    uint32_t delete_files = 0;
+    uint64_t delete_bytes = 0;
+    for (uint32_t i = 0; i < group_count; i++) {
+        if (groups[i].retained) continue;
+        delete_groups++;
+        delete_files += (groups[i].has_md ? 1u : 0u) + (groups[i].has_c ? 1u : 0u);
+        delete_bytes += groups[i].bytes;
+    }
+
+    int wrote = write_prune_plan(options->out_dir, options, groups, group_count, delete_groups, delete_files, delete_bytes);
+
+    printf("\n%s%sHash Forge prune%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %smode%s          %s\n", c_dim(), c_reset(), options->dry_run ? "dry-run" : "delete");
+    printf("  %sout dir%s       %s\n", c_dim(), c_reset(), options->out_dir);
+    printf("  %skeep runs%s     %u\n", c_dim(), c_reset(), options->keep_runs);
+    printf("  %skeep days%s     %u\n", c_dim(), c_reset(), options->keep_days);
+    printf("  %sgroups%s        %u scanned, %u delete candidates\n", c_dim(), c_reset(), group_count, delete_groups);
+    printf("  %sfiles%s         %u delete candidates\n", c_dim(), c_reset(), delete_files);
+    printf("  %sbytes%s         %llu reclaimable\n", c_dim(), c_reset(), (unsigned long long)delete_bytes);
+    printf("  %sprotected%s     %u explicit paths\n", c_dim(), c_reset(), inventory.protected_count);
+    printf("  %soutput%s        %s\n", c_dim(), c_reset(), wrote ? "out/prune-plan.md" : "plan skipped");
+
+    uint32_t shown = 0;
+    for (uint32_t i = 0; i < group_count && shown < 12; i++) {
+        if (groups[i].retained) continue;
+        printf("  %sremove%s        %s%s%s%s\n",
+               c_dim(), c_reset(),
+               groups[i].has_md ? groups[i].md_path : "",
+               groups[i].has_md && groups[i].has_c ? " + " : "",
+               groups[i].has_c ? groups[i].c_path : "",
+               options->dry_run ? " (dry-run)" : "");
+        shown++;
+    }
+    if (delete_groups > shown) {
+        printf("  %sremove%s        ... %u more groups\n", c_dim(), c_reset(), delete_groups - shown);
+    }
+
+    if (!options->dry_run) {
+        for (uint32_t i = 0; i < group_count; i++) {
+            if (groups[i].retained) continue;
+            if (groups[i].has_md) {
+                if (!artifact_path_is_safe(groups[i].md_path) || !DeleteFileA(groups[i].md_path)) {
+                    fprintf(stderr, "failed to delete %s\n", groups[i].md_path);
+                    free(groups);
+                    return 1;
+                }
+            }
+            if (groups[i].has_c) {
+                if (!artifact_path_is_safe(groups[i].c_path) || !DeleteFileA(groups[i].c_path)) {
+                    fprintf(stderr, "failed to delete %s\n", groups[i].c_path);
+                    free(groups);
+                    return 1;
+                }
+            }
+        }
+    }
+
+    printf("\n%s%sPrune complete%s\n", c_bold(), c_green(), c_reset());
+    free(groups);
+    return 0;
+}

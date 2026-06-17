@@ -47,6 +47,8 @@ static void print_usage(const char *program) {
     printf("  %s baselines [--seed <u64>] [--quality <quick|normal|deep>] [--quick|--deep]\n", program);
     printf("  %s champions\n", program);
     printf("  %s history [--top <n>]\n", program);
+    printf("  %s artifacts [--out-dir <out-subdir>]\n", program);
+    printf("  %s prune [--dry-run] [--keep-runs <n>] [--keep-days <n>] [--out-dir <out-subdir>] [--yes]\n", program);
     printf("  %s export-best\n", program);
 }
 
@@ -400,6 +402,66 @@ static int parse_history_options(int argc, char **argv, HistoryOptions *options)
     return 1;
 }
 
+static int parse_artifact_options(int argc, char **argv, ArtifactOptions *options) {
+    memset(options, 0, sizeof(*options));
+    strcpy(options->out_dir, "out");
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--out-dir") == 0 && i + 1 < argc) {
+            const char *out_dir = argv[++i];
+            if (strlen(out_dir) >= sizeof(options->out_dir)) {
+                fprintf(stderr, "invalid --out-dir value\n");
+                return 0;
+            }
+            strcpy(options->out_dir, out_dir);
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int parse_prune_options(int argc, char **argv, PruneOptions *options) {
+    memset(options, 0, sizeof(*options));
+    strcpy(options->out_dir, "out");
+    options->keep_runs = 200;
+    options->keep_days = 14;
+    options->dry_run = 1;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--dry-run") == 0) {
+            options->dry_run = 1;
+        } else if (strcmp(argv[i], "--yes") == 0) {
+            options->yes = 1;
+            options->dry_run = 0;
+        } else if (strcmp(argv[i], "--keep-runs") == 0 && i + 1 < argc) {
+            uint64_t keep_runs = 0;
+            if (!parse_u64(argv[++i], &keep_runs) || keep_runs > MAX_HISTORY_ROWS) {
+                fprintf(stderr, "invalid --keep-runs value\n");
+                return 0;
+            }
+            options->keep_runs = (uint32_t)keep_runs;
+        } else if (strcmp(argv[i], "--keep-days") == 0 && i + 1 < argc) {
+            uint64_t keep_days = 0;
+            if (!parse_u64(argv[++i], &keep_days) || keep_days > 36500u) {
+                fprintf(stderr, "invalid --keep-days value\n");
+                return 0;
+            }
+            options->keep_days = (uint32_t)keep_days;
+        } else if (strcmp(argv[i], "--out-dir") == 0 && i + 1 < argc) {
+            const char *out_dir = argv[++i];
+            if (strlen(out_dir) >= sizeof(options->out_dir)) {
+                fprintf(stderr, "invalid --out-dir value\n");
+                return 0;
+            }
+            strcpy(options->out_dir, out_dir);
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int command_export_best(void) {
     FILE *file = fopen("out/best.c", "rb");
     if (!file) {
@@ -477,6 +539,22 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_history(&options);
+    }
+
+    if (strcmp(argv[1], "artifacts") == 0) {
+        ArtifactOptions options;
+        if (!parse_artifact_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_artifacts(&options);
+    }
+
+    if (strcmp(argv[1], "prune") == 0) {
+        PruneOptions options;
+        if (!parse_prune_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_prune(&options);
     }
 
     if (strcmp(argv[1], "export-best") == 0) {

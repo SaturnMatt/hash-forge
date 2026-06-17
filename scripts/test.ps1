@@ -14,6 +14,8 @@ $baselinesPath = Join-Path $root "out\baselines.md"
 $championsPath = Join-Path $root "out\champions.md"
 $championsDir = Join-Path $root "out\champions"
 $historyMdPath = Join-Path $root "out\history.md"
+$artifactsPath = Join-Path $root "out\artifacts.md"
+$prunePlanPath = Join-Path $root "out\prune-plan.md"
 $bestCPath = Join-Path $root "out\best.c"
 $bestTxtPath = Join-Path $root "out\best.txt"
 $improvementsPath = Join-Path $root "out\improvements.csv"
@@ -351,6 +353,43 @@ function Assert-HistoryReport {
     Assert ($historyReport -match "flag names") "history report missing decoded flag column"
 }
 
+function Assert-ArtifactReport {
+    Assert (Test-Path $artifactsPath) "missing out\artifacts.md"
+    $artifacts = Get-Content $artifactsPath -Raw
+    Assert ($artifacts -match "hash-forge artifact inventory") "artifact report missing title"
+    Assert ($artifacts -match "Run archive files") "artifact report missing run archive count"
+    Assert ($artifacts -match "Protected artifacts") "artifact report missing protected count"
+}
+
+function Assert-PrunePlan {
+    Assert (Test-Path $prunePlanPath) "missing out\prune-plan.md"
+    $plan = Get-Content $prunePlanPath -Raw
+    Assert ($plan -match "hash-forge prune plan") "prune plan missing title"
+    Assert ($plan -match "Groups to delete") "prune plan missing delete groups"
+    Assert ($plan -match "Bytes to reclaim") "prune plan missing reclaim bytes"
+}
+
+function New-PruneFixture {
+    $fixture = Join-Path $root "out\prune-fixture"
+    Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path (Join-Path $fixture "runs") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $fixture "champions") | Out-Null
+    Set-Content -LiteralPath (Join-Path $fixture "history.csv") -Value "unix_time,seed,run_generation`n1,1,1"
+    Set-Content -LiteralPath (Join-Path $fixture "best.c") -Value "best"
+    Set-Content -LiteralPath (Join-Path $fixture "best.txt") -Value "best"
+    Set-Content -LiteralPath (Join-Path $fixture "report.md") -Value "report"
+    Set-Content -LiteralPath (Join-Path $fixture "summary.txt") -Value "summary"
+
+    foreach ($stem in @("delete_old", "keep_latest", "keep_champion")) {
+        Set-Content -LiteralPath (Join-Path $fixture "runs\$stem.md") -Value "$stem report"
+        Set-Content -LiteralPath (Join-Path $fixture "runs\$stem.c") -Value "$stem export"
+    }
+    Set-Content -LiteralPath (Join-Path $fixture "latest_report_path.txt") -Value "out/prune-fixture/runs/keep_latest.md"
+    Set-Content -LiteralPath (Join-Path $fixture "latest_export_path.txt") -Value "out/prune-fixture/runs/keep_latest.c"
+    Set-Content -LiteralPath (Join-Path $fixture "champions\keep.hfch") -Value "source_report=out/prune-fixture/runs/keep_champion.md"
+    $fixture
+}
+
 $lockRoot = Join-Path $root "build"
 New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
 $lockDir = Join-Path $lockRoot "test.lock"
@@ -523,6 +562,33 @@ $historyResult = Invoke-Captured $exe @("history", "--top", "3")
 Assert ($historyResult.Output -match "Hash Forge history top runs") "history output missing title"
 Assert ($historyResult.Output -match "History complete") "history output missing completion"
 Assert-HistoryReport
+
+$badArtifacts = Invoke-Captured $exe @("artifacts", "--out-dir", ".") @(2)
+Assert ($badArtifacts.Output -match "inside out") "bad-artifacts out-dir error text changed"
+$artifactsResult = Invoke-Captured $exe @("artifacts")
+Assert ($artifactsResult.Output -match "Hash Forge artifacts") "artifacts output missing title"
+Assert ($artifactsResult.Output -match "protected") "artifacts output missing protected count"
+Assert-ArtifactReport
+
+$fixture = New-PruneFixture
+$fixtureArtifacts = Invoke-Captured $exe @("artifacts", "--out-dir", "out/prune-fixture")
+Assert ($fixtureArtifacts.Output -match "run pairs") "fixture artifacts output missing run pairs"
+$deleteMd = Join-Path $fixture "runs\delete_old.md"
+$deleteC = Join-Path $fixture "runs\delete_old.c"
+$keepLatestMd = Join-Path $fixture "runs\keep_latest.md"
+$keepChampionMd = Join-Path $fixture "runs\keep_champion.md"
+$dryRun = Invoke-Captured $exe @("prune", "--out-dir", "out/prune-fixture", "--keep-runs", "0", "--keep-days", "0", "--dry-run")
+Assert ($dryRun.Output -match "dry-run") "prune dry-run output missing mode"
+Assert ($dryRun.Output -match "delete candidates") "prune dry-run missing candidate count"
+Assert (Test-Path $deleteMd) "dry-run deleted report"
+Assert (Test-Path $deleteC) "dry-run deleted export"
+Assert-PrunePlan
+$realPrune = Invoke-Captured $exe @("prune", "--out-dir", "out/prune-fixture", "--keep-runs", "0", "--keep-days", "0", "--yes")
+Assert ($realPrune.Output -match "Prune complete") "real prune did not complete"
+Assert (-not (Test-Path $deleteMd)) "real prune kept unprotected report"
+Assert (-not (Test-Path $deleteC)) "real prune kept unprotected export"
+Assert (Test-Path $keepLatestMd) "real prune removed latest-protected report"
+Assert (Test-Path $keepChampionMd) "real prune removed champion-protected report"
 
 Compile-BestC
 

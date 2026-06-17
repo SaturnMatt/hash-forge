@@ -332,6 +332,9 @@ hash-forge bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 hash-forge baselines --seed 123 --quality deep
 hash-forge champions
 hash-forge history --top 10
+hash-forge artifacts
+hash-forge prune --dry-run
+hash-forge prune --keep-runs 200 --keep-days 14 --yes
 hash-forge export-best
 ```
 
@@ -391,6 +394,17 @@ severity, deep score, quick score, total candidates evaluated, and recency,
 prints a compact leaderboard, and writes `out/history.md` with total candidate
 counts, decoded flag names, and starter/refresh policy columns.
 
+`artifacts` reads the generated `out/` tree and prints a safe inventory:
+archive pair counts, orphan reports/exports, total bytes, champion count,
+history rows, latest pointers, and protected artifact count. It should write
+`out/artifacts.md`.
+
+`prune` plans generated archive cleanup. It should default to dry-run and
+require `--yes` for deletion. It may remove old `out/runs/*.md` and
+`out/runs/*.c` archive pairs outside the retention window, but must never remove
+current latest files, history, champion records, champion-referenced archives,
+latest pointer targets, or anything outside `out/`.
+
 ## Output And Persistence
 
 The hot loop should not depend on disk.
@@ -425,6 +439,8 @@ out/policy.csv
 out/baselines.md
 out/champions/*.hfch
 out/champions.md
+out/artifacts.md
+out/prune-plan.md
 ```
 
 `best.c` should be a standalone exported C function, independent of the VM.
