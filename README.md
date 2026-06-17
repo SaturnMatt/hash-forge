@@ -7,8 +7,8 @@ The project will evolve short in-memory VM programs over `key`, `seed`, `hash`,
 and scratch registers, score them with hash64-inspired tests, and export the
 best candidates as standalone C.
 
-This repository is intentionally starting small. The current tree is the project
-environment and scaffold for the first implementation pass.
+The current implementation is intentionally small: a single native C CLI plus a
+small hash-table support module used by tests.
 
 ## Toolchain
 
@@ -23,6 +23,9 @@ Expected GCC path:
 ```txt
 C:\msys64\ucrt64\bin\gcc.exe
 ```
+
+If GCC is not installed yet, `build.ps1` falls back to Visual Studio C Build
+Tools when available. GCC remains the preferred release toolchain.
 
 If MSYS2 is missing:
 
@@ -54,12 +57,30 @@ The output binary is:
 build\hash-forge.exe
 ```
 
-## Current Scaffold Commands
+## Commands
 
 ```powershell
 .\build\hash-forge.exe self-test
 .\build\hash-forge.exe run --seed 123 --generations 100
+.\build\hash-forge.exe export-best
 ```
 
-The scaffold is not the full engine yet. See [SPEC.md](SPEC.md) for the v1
-target.
+`run` keeps the population, scoring state, and candidate programs in memory
+during evolution. On completion it writes:
+
+```txt
+out\best.c
+out\best.txt
+out\summary.txt
+```
+
+`out\best.c` is standalone C containing the exported winner.
+
+## Smoke Test
+
+```powershell
+.\scripts\smoke.ps1
+```
+
+The smoke test builds the project, runs self-test, runs the hash-table tests,
+and performs a deterministic 100-generation evolution run.
