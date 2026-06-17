@@ -93,6 +93,8 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Diversity telemetry") "report missing diversity telemetry"
     Assert ($report -match "Unique candidates in last scored generation") "report missing unique candidate count"
     Assert ($report -match "Duplicate candidate repairs") "report missing duplicate repair count"
+    Assert ($report -match "Stagnation refreshes") "report missing stagnation refresh count"
+    Assert ($report -match "Extra adaptive random immigrants") "report missing adaptive immigrant count"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)
     Assert ($report -match [regex]::Escape("- ID: ``$hexId``")) "report missing best id"
     Assert ($report -match "Quick score") "report missing quick score"

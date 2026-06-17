@@ -25,6 +25,8 @@
 #define SURVIVOR_COUNT 32
 #define CROSSOVER_COUNT 16
 #define IMMIGRANT_COUNT 8
+#define STAGNATION_REFRESH_GENERATIONS 50
+#define STAGNATION_IMMIGRANT_COUNT 64
 #define DEEP_EVERY 25
 #define DEEP_TOP_N 8
 #define COLLISION_TABLE_SIZE 65536u
@@ -124,6 +126,8 @@ typedef struct RunReport {
     uint64_t deep_candidates_evaluated;
     uint64_t duplicate_repairs;
     uint64_t duplicate_random_replacements;
+    uint64_t stagnation_refreshes;
+    uint64_t adaptive_random_immigrants;
     double elapsed_seconds;
     const char *stop_reason;
     uint32_t threads;
@@ -932,14 +936,20 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
             report->last_unique_candidates, POPULATION_SIZE);
     fprintf(md, "- Duplicate candidate repairs: `%llu`\n",
             (unsigned long long)report->duplicate_repairs);
-    fprintf(md, "- Fresh random duplicate replacements: `%llu`\n\n",
+    fprintf(md, "- Fresh random duplicate replacements: `%llu`\n",
             (unsigned long long)report->duplicate_random_replacements);
+    fprintf(md, "- Stagnation refreshes: `%llu`\n",
+            (unsigned long long)report->stagnation_refreshes);
+    fprintf(md, "- Extra adaptive random immigrants: `%llu`\n\n",
+            (unsigned long long)report->adaptive_random_immigrants);
 
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
     fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
+    fprintf(md, "- Stagnation refresh window: `%u` generations\n", STAGNATION_REFRESH_GENERATIONS);
+    fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", STAGNATION_IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
     fprintf(md, "- Deep score cadence: every `%u` generations\n", deep_every_for_quality(options->quality));
     fprintf(md, "- Deep score top N: `%u`\n", deep_top_n_for_quality(options->quality));
@@ -1181,6 +1191,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "last_unique_candidates: %u\n", report->last_unique_candidates);
     fprintf(txt, "duplicate_repairs: %llu\n", (unsigned long long)report->duplicate_repairs);
     fprintf(txt, "duplicate_random_replacements: %llu\n", (unsigned long long)report->duplicate_random_replacements);
+    fprintf(txt, "stagnation_refreshes: %llu\n", (unsigned long long)report->stagnation_refreshes);
+    fprintf(txt, "adaptive_random_immigrants: %llu\n", (unsigned long long)report->adaptive_random_immigrants);
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
     uint32_t op_counts[OP_COUNT];
@@ -1200,7 +1212,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -1210,7 +1222,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated),
                 report->last_unique_candidates,
                 (unsigned long long)report->duplicate_repairs,
-                (unsigned long long)report->duplicate_random_replacements);
+                (unsigned long long)report->duplicate_random_replacements,
+                (unsigned long long)report->stagnation_refreshes,
+                (unsigned long long)report->adaptive_random_immigrants);
         fclose(summary);
     }
 
@@ -1875,6 +1889,9 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sduplicate repairs%s   %llu (%llu fresh replacements)\n", c_dim(), c_reset(),
            (unsigned long long)report->duplicate_repairs,
            (unsigned long long)report->duplicate_random_replacements);
+    printf("  %sstagnation refresh%s  %llu (%llu extra immigrants)\n", c_dim(), c_reset(),
+           (unsigned long long)report->stagnation_refreshes,
+           (unsigned long long)report->adaptive_random_immigrants);
     printf("  %sbest id%s            %s%016llx%s\n", c_dim(), c_reset(), c_cyan(), (unsigned long long)candidate->id, c_reset());
     printf("  %sbest quick%s         %lld\n", c_dim(), c_reset(), (long long)candidate->quick_score);
     printf("  %sbest deep%s          %lld\n", c_dim(), c_reset(), (long long)candidate->deep_score);
@@ -1962,6 +1979,9 @@ static int command_run(const RunOptions *options) {
     uint64_t deep_candidates_evaluated = 0;
     uint64_t duplicate_repairs = 0;
     uint64_t duplicate_random_replacements = 0;
+    uint64_t stagnation_refreshes = 0;
+    uint64_t adaptive_random_immigrants = 0;
+    uint64_t last_improvement_generation = 0;
     uint32_t last_unique_candidates = POPULATION_SIZE;
     uint32_t score_threads = options->auto_threads
         ? choose_auto_thread_count(population, options->seed)
@@ -2012,6 +2032,7 @@ static int command_run(const RunOptions *options) {
         if (best_seen.quick_score == INT64_MIN ||
             compare_candidates(&population[0], &best_seen) < 0) {
             best_seen = population[0];
+            last_improvement_generation = generation;
         }
 
         double now_elapsed = elapsed_wall_seconds_since(start_seconds);
@@ -2032,7 +2053,15 @@ static int command_run(const RunOptions *options) {
             if (uniqueness) duplicate_repairs++;
             if (uniqueness == 2) duplicate_random_replacements++;
         }
-        uint32_t immigrant_start = POPULATION_SIZE > IMMIGRANT_COUNT ? POPULATION_SIZE - IMMIGRANT_COUNT : SURVIVOR_COUNT;
+        uint32_t immigrant_count = IMMIGRANT_COUNT;
+        if (generation > last_improvement_generation &&
+            generation - last_improvement_generation >= STAGNATION_REFRESH_GENERATIONS) {
+            immigrant_count = STAGNATION_IMMIGRANT_COUNT;
+            stagnation_refreshes++;
+            adaptive_random_immigrants += STAGNATION_IMMIGRANT_COUNT - IMMIGRANT_COUNT;
+            last_improvement_generation = generation;
+        }
+        uint32_t immigrant_start = POPULATION_SIZE > immigrant_count ? POPULATION_SIZE - immigrant_count : SURVIVOR_COUNT;
         if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
         uint32_t crossover_start = immigrant_start > CROSSOVER_COUNT ? immigrant_start - CROSSOVER_COUNT : SURVIVOR_COUNT;
         if (crossover_start < SURVIVOR_COUNT) crossover_start = SURVIVOR_COUNT;
@@ -2083,6 +2112,8 @@ static int command_run(const RunOptions *options) {
         deep_candidates_evaluated,
         duplicate_repairs,
         duplicate_random_replacements,
+        stagnation_refreshes,
+        adaptive_random_immigrants,
         elapsed,
         stop_reason_for(options, generation, elapsed),
         score_threads,
