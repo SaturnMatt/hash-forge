@@ -432,6 +432,22 @@ static int writes_hash(const Candidate *candidate) {
     return 0;
 }
 
+static void trim_trailing_dead_instructions(Candidate *candidate) {
+    while (candidate->instruction_count > MIN_PROGRAM_LEN &&
+           candidate->instructions[candidate->instruction_count - 1].dst != 2) {
+        candidate->instruction_count--;
+    }
+}
+
+static void finalize_candidate(Candidate *candidate, Rng *rng) {
+    if (!writes_hash(candidate)) {
+        candidate->instructions[rng_range(rng, candidate->instruction_count)].dst = 2;
+    }
+    trim_trailing_dead_instructions(candidate);
+    candidate->id = candidate_id(candidate);
+    candidate->deep_score = INT64_MIN;
+}
+
 static uint32_t fail_flag_count(uint32_t flags) {
     uint32_t count = 0;
     while (flags) {
@@ -508,11 +524,7 @@ static void random_candidate(Candidate *candidate, Rng *rng) {
     for (uint32_t i = 0; i < candidate->instruction_count; i++) {
         random_instruction(&candidate->instructions[i], rng, i == 0 || rng_range(rng, 3) == 0);
     }
-    if (!writes_hash(candidate)) {
-        candidate->instructions[0].dst = 2;
-    }
-    candidate->id = candidate_id(candidate);
-    candidate->deep_score = INT64_MIN;
+    finalize_candidate(candidate, rng);
 }
 
 static void mutate_candidate(Candidate *child, const Candidate *parent, Rng *rng) {
@@ -559,10 +571,7 @@ static void mutate_candidate(Candidate *child, const Candidate *parent, Rng *rng
         }
     }
 
-    if (!writes_hash(child)) {
-        child->instructions[rng_range(rng, child->instruction_count)].dst = 2;
-    }
-    child->id = candidate_id(child);
+    finalize_candidate(child, rng);
 }
 
 static void crossover_candidate(Candidate *child, const Candidate *a, const Candidate *b, Rng *rng) {
@@ -583,15 +592,11 @@ static void crossover_candidate(Candidate *child, const Candidate *a, const Cand
         random_instruction(&child->instructions[child->instruction_count++], rng, rng_range(rng, 3) == 0);
     }
 
-    if (!writes_hash(child)) {
-        child->instructions[rng_range(rng, child->instruction_count)].dst = 2;
-    }
     child->parent_id = a->id ^ rotl64(b->id, 17);
     child->generation = (a->generation > b->generation ? a->generation : b->generation) + 1;
     child->quick_score = 0;
-    child->deep_score = INT64_MIN;
     child->fail_flags = 0;
-    child->id = candidate_id(child);
+    finalize_candidate(child, rng);
 }
 
 static int candidate_id_exists(const Candidate *candidates, uint32_t count, uint64_t id) {
@@ -1744,6 +1749,31 @@ static int run_generation_self_tests(void) {
     repaired = (Instruction){ OP_ADD, 2, OPERAND_CONST, 0, 99, 0 };
     repair_instruction(&repaired, &op_rng);
     if (!self_check(repaired.constant != 0, "repair fixes zero ADD constant")) return 0;
+
+    {
+        Rng final_rng = { 0x1234abcd9876ef00ull };
+        Candidate trailing;
+        memset(&trailing, 0, sizeof(trailing));
+        trailing.instruction_count = 10;
+        for (uint32_t i = 0; i < trailing.instruction_count; i++) {
+            trailing.instructions[i] = (Instruction){ OP_XOR, 2, OPERAND_CONST, 0, 1, 0x9e3779b97f4a7c15ull + i };
+        }
+        trailing.instructions[8].dst = 3;
+        trailing.instructions[9].dst = 4;
+        finalize_candidate(&trailing, &final_rng);
+        if (!self_check(trailing.instruction_count == 8, "finalize trims trailing dead instructions")) return 0;
+        if (!self_check(candidate_is_valid(&trailing), "trimmed candidate remains valid")) return 0;
+
+        Candidate no_hash;
+        memset(&no_hash, 0, sizeof(no_hash));
+        no_hash.instruction_count = MIN_PROGRAM_LEN;
+        for (uint32_t i = 0; i < no_hash.instruction_count; i++) {
+            no_hash.instructions[i] = (Instruction){ OP_ADD, 3, OPERAND_CONST, 0, 1, 3 + i };
+        }
+        finalize_candidate(&no_hash, &final_rng);
+        if (!self_check(writes_hash(&no_hash), "finalize repairs missing hash write")) return 0;
+        if (!self_check(candidate_is_valid(&no_hash), "finalized no-hash candidate remains valid")) return 0;
+    }
 
     printf("generation tests: pass\n");
     return 1;

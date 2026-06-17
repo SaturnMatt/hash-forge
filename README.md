@@ -77,6 +77,8 @@ Opcode generation is lightly biased toward mixing-heavy operations such as
 `XOR`, `MUL`, and rotates while keeping every VM operation reachable.
 Generated and mutated instructions are repaired to avoid obvious dead forms
 such as self-MOV, multiply-by-one constants, and zero ADD/XOR constants.
+Candidates are finalized by ensuring a `hash` write and trimming trailing
+non-`hash` instructions that cannot affect output.
 Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
 Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candidate

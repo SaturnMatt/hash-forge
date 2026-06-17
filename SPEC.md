@@ -203,6 +203,9 @@ XOR, MUL, and rotates, but every VM opcode must remain reachable and covered by
 self-test invariants.
 Instruction generation and mutation should repair obvious dead forms such as
 self-MOV, multiply-by-one constants, and zero ADD/XOR constants.
+Candidate finalization should ensure at least one `hash` write, trim trailing
+non-`hash` instructions that cannot affect output, and recompute the stable
+candidate id.
 
 ## Test Suite
 
