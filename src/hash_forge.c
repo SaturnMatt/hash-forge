@@ -1759,9 +1759,8 @@ static int command_run(const RunOptions *options) {
             qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
         }
 
-        if (population[0].fail_flags < best_seen.fail_flags ||
-            best_seen.quick_score == INT64_MIN ||
-            (population[0].fail_flags == best_seen.fail_flags && population[0].quick_score > best_seen.quick_score)) {
+        if (best_seen.quick_score == INT64_MIN ||
+            compare_candidates(&population[0], &best_seen) < 0) {
             best_seen = population[0];
         }
 
