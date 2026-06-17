@@ -9,9 +9,12 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path $root "src\hash_forge.c"
 $tableSrc = Join-Path $root "hash_table\hash_table.c"
 $tableTestSrc = Join-Path $root "hash_table\test_hash_table.c"
+$arraySrc = Join-Path $root "dynamic_array\dynamic_array.c"
+$arrayTestSrc = Join-Path $root "dynamic_array\test_dynamic_array.c"
 $buildDir = Join-Path $root "build"
 $exe = Join-Path $buildDir "hash-forge.exe"
 $tableTestExe = Join-Path $buildDir "hash_table_tests.exe"
+$arrayTestExe = Join-Path $buildDir "dynamic_array_tests.exe"
 
 $candidates = @()
 if ($env:CC) {
@@ -49,6 +52,14 @@ if ($gcc) {
             exit $LASTEXITCODE
         }
         Write-Host "Built $tableTestExe with GCC"
+    }
+
+    if ((Test-Path $arraySrc) -and (Test-Path $arrayTestSrc)) {
+        & $gcc @flags "-Wall" "-Wextra" "-I" (Join-Path $root "dynamic_array") $arraySrc $arrayTestSrc "-o" $arrayTestExe
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+        Write-Host "Built $arrayTestExe with GCC"
     }
 
     Write-Host "Built $exe with GCC"
@@ -90,6 +101,16 @@ if ((Test-Path $tableSrc) -and (Test-Path $tableTestSrc)) {
         exit $LASTEXITCODE
     }
     Write-Host "Built $tableTestExe with Visual Studio C fallback"
+}
+
+if ((Test-Path $arraySrc) -and (Test-Path $arrayTestSrc)) {
+    $include = Join-Path $root "dynamic_array"
+    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$arraySrc`" `"$arrayTestSrc`" /Fe:`"$arrayTestExe`""
+    cmd.exe /c $cmd
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    Write-Host "Built $arrayTestExe with Visual Studio C fallback"
 }
 
 Write-Host "Built $exe with Visual Studio C fallback; install MSYS2 UCRT64 GCC for the preferred toolchain."
