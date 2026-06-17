@@ -933,6 +933,42 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
         fprintf(md, "Skipped: failed to allocate score scratch space.\n\n");
     }
 
+    fprintf(md, "## Final multi-seed audit\n\n");
+    ScoreScratch *audit_scratch = (ScoreScratch *)calloc(1, sizeof(*audit_scratch));
+    if (audit_scratch) {
+        const uint32_t audit_count = 5;
+        int64_t min_score = INT64_MAX;
+        int64_t max_score = INT64_MIN;
+        int64_t total_score = 0;
+        uint32_t combined_flags = 0;
+        fprintf(md, "| audit seed | deep score | flags |\n");
+        fprintf(md, "|---|---:|---|\n");
+        for (uint32_t i = 0; i < audit_count; i++) {
+            uint64_t audit_seed = mix_seed(options->seed, candidate->id, 1000u + i);
+            ScoreResult audit = score_candidate(candidate, audit_scratch, audit_seed, 1, options->quality);
+            if (audit.score < min_score) min_score = audit.score;
+            if (audit.score > max_score) max_score = audit.score;
+            total_score += audit.score;
+            combined_flags |= audit.fail_flags;
+            fprintf(md, "| `%llx` | %lld | `0x%x` (",
+                    (unsigned long long)audit_seed,
+                    (long long)audit.score,
+                    audit.fail_flags);
+            print_fail_flags(md, audit.fail_flags);
+            fprintf(md, ") |\n");
+        }
+        fprintf(md, "\n");
+        fprintf(md, "- Worst audit deep score: `%lld`\n", (long long)min_score);
+        fprintf(md, "- Best audit deep score: `%lld`\n", (long long)max_score);
+        fprintf(md, "- Average audit deep score: `%lld`\n", (long long)(total_score / (int64_t)audit_count));
+        fprintf(md, "- Combined audit flags: `0x%x` (", combined_flags);
+        print_fail_flags(md, combined_flags);
+        fprintf(md, ")\n\n");
+        free(audit_scratch);
+    } else {
+        fprintf(md, "Skipped: failed to allocate audit scratch space.\n\n");
+    }
+
     uint32_t op_counts[OP_COUNT];
     count_ops(candidate, op_counts);
     fprintf(md, "## Operator histogram\n\n");

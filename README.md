@@ -98,9 +98,9 @@ export time.
 stop reason, scores, decoded fail flags, and the best candidate instruction
 listing. Scoring signals include trivial-output, collision, bucket,
 avalanche, and neighboring-input differential checks. The report also records
-the best candidate score breakdown, operator histogram, baseline comparison
-scores, plus quick, deep, and total candidate hash functions evaluated during
-the run.
+the best candidate score breakdown, final multi-seed audit, operator histogram,
+baseline comparison scores, plus quick, deep, and total candidate hash functions
+evaluated during the run.
 `out\runs\*.md` stores archived per-run copies of completed reports, while
 `out\latest_report_path.txt` points to the latest archived report.
 `out\runs\*.c` stores archived per-run standalone C exports, while
