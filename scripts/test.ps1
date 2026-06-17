@@ -7,6 +7,7 @@ $arrayTests = Join-Path $root "build\dynamic_array_tests.exe"
 $summaryPath = Join-Path $root "out\summary.txt"
 $reportPath = Join-Path $root "out\report.md"
 $benchPath = Join-Path $root "out\bench.md"
+$comparePath = Join-Path $root "out\compare.md"
 $historyMdPath = Join-Path $root "out\history.md"
 $bestCPath = Join-Path $root "out\best.c"
 $latestReportPath = Join-Path $root "out\latest_report_path.txt"
@@ -185,6 +186,17 @@ function Assert-BenchReport([string[]]$expectedThreadTexts) {
     }
 }
 
+function Assert-CompareReport {
+    Assert (Test-Path $comparePath) "missing out\compare.md"
+    $compare = Get-Content $comparePath -Raw
+    Assert ($compare -match "hash-forge policy comparison") "compare report missing title"
+    Assert ($compare -match "Generations per trial") "compare report missing generation setting"
+    Assert ($compare -match "default") "compare report missing default policy"
+    Assert ($compare -match "no-starter") "compare report missing no-starter policy"
+    Assert ($compare -match "no-refresh") "compare report missing no-refresh policy"
+    Assert ($compare -match "bare") "compare report missing bare policy"
+}
+
 function Assert-HistoryReport {
     Assert (Test-Path $historyMdPath) "missing out\history.md"
     $historyReport = Get-Content $historyMdPath -Raw
@@ -229,6 +241,8 @@ $badQuality = Invoke-Captured $exe @("run", "--seed", "123", "--quality", "maxim
 Assert ($badQuality.Output -match "invalid --quality") "bad-quality error text changed"
 $badBench = Invoke-Captured $exe @("bench") @(2)
 Assert ($badBench.Output -match "bench requires --seconds") "missing bench seconds error text changed"
+$badCompare = Invoke-Captured $exe @("compare", "--seeds", "0") @(2)
+Assert ($badCompare.Output -match "invalid --seeds") "bad-compare-seeds error text changed"
 
 $thread1 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "1")
 Assert ($thread1.RunGeneration -eq 100) "thread=1 run did not complete 100 generations"
@@ -284,6 +298,11 @@ Assert ($benchResult.Output -match "quality") "bench output missing quality"
 Assert ($benchResult.Output -match "quick/sec") "bench output missing quick/sec"
 Assert ($benchResult.Output -match "deep/sec") "bench output missing deep/sec"
 Assert-BenchReport @("| 1 | 1 |", "| 2 | 2 |", "| 32 | 32 |")
+
+$compareResult = Invoke-Captured $exe @("compare", "--seed", "123", "--seeds", "1", "--generations", "3", "--threads", "1", "--quality", "quick")
+Assert ($compareResult.Output -match "Compare complete") "compare output missing completion"
+Assert ($compareResult.Output -match "best policy") "compare output missing best policy"
+Assert-CompareReport
 
 $badHistory = Invoke-Captured $exe @("history", "--top", "0") @(2)
 Assert ($badHistory.Output -match "invalid --top") "bad-history-top error text changed"

@@ -34,6 +34,7 @@
 #define MAX_SCORE_THREADS 32
 #define MAX_BENCH_THREAD_OPTIONS 16
 #define MAX_HISTORY_ROWS 4096
+#define MAX_COMPARE_SEEDS 64
 
 #define FAIL_ZERO       0x01u
 #define FAIL_COLLISION  0x02u
@@ -161,6 +162,27 @@ typedef struct BenchResult {
 typedef struct HistoryOptions {
     uint32_t top;
 } HistoryOptions;
+
+typedef struct CompareOptions {
+    uint64_t seed;
+    uint64_t generations;
+    uint32_t seed_count;
+    uint32_t threads;
+    QualityMode quality;
+    int have_threads;
+} CompareOptions;
+
+typedef struct CompareResult {
+    const char *policy;
+    uint64_t seed;
+    uint64_t best_id;
+    int64_t quick_score;
+    int64_t deep_score;
+    uint32_t flags;
+    uint64_t total_candidates;
+    uint64_t stagnation_refreshes;
+    uint32_t last_unique_candidates;
+} CompareResult;
 
 typedef struct HistoryRow {
     long long unix_time;
@@ -1092,6 +1114,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- `out/latest_report_path.txt`: path to the latest archived report\n");
     fprintf(md, "- `out/latest_export_path.txt`: path to the latest archived C export\n");
     fprintf(md, "- `out/history.csv`: compact append-only run history\n");
+    fprintf(md, "- `out/compare.md`: latest deterministic policy comparison report\n");
     fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
 
     fprintf(md, "## Interpretation note\n\n");
@@ -2022,7 +2045,7 @@ static uint32_t choose_auto_thread_count(Candidate *population, uint64_t seed) {
     return best_threads;
 }
 
-static int command_run(const RunOptions *options) {
+static int run_evolution(const RunOptions *options, int print_status, Candidate *best_out, RunReport *report_out) {
     Candidate *population = (Candidate *)calloc(POPULATION_SIZE, sizeof(*population));
     Candidate *next = (Candidate *)calloc(POPULATION_SIZE, sizeof(*next));
     if (!population || !next) {
@@ -2069,7 +2092,9 @@ static int command_run(const RunOptions *options) {
     score_threads = score_pool.thread_count;
     double start_seconds = wall_seconds_now();
 
-    print_run_header(options, score_threads);
+    if (print_status) {
+        print_run_header(options, score_threads);
+    }
 
     while (!g_stop_requested &&
            !generation_limit_reached(options, generation) &&
@@ -2106,12 +2131,12 @@ static int command_run(const RunOptions *options) {
         }
 
         double now_elapsed = elapsed_wall_seconds_since(start_seconds);
-        if (generation == 1 ||
+        if (print_status && (generation == 1 ||
             deep_generation ||
             generation_limit_reached(options, generation) ||
             seconds_limit_reached(options, start_seconds) ||
             last_status_elapsed < 0.0 ||
-            now_elapsed - last_status_elapsed >= 0.25) {
+            now_elapsed - last_status_elapsed >= 0.25)) {
             print_progress_line(options, generation, now_elapsed, &population[0],
                                 quick_candidates_evaluated, deep_candidates_evaluated);
             last_status_elapsed = now_elapsed;
@@ -2191,13 +2216,156 @@ static int command_run(const RunOptions *options) {
         last_unique_candidates
     };
 
-    int exported = export_best(&best_seen, options, &report);
-    print_final_report(&best_seen, options, &report, exported);
+    if (best_out) *best_out = best_seen;
+    if (report_out) *report_out = report;
 
     free(population);
     free(next);
     score_pool_destroy(&score_pool);
+    return 0;
+}
+
+static int command_run(const RunOptions *options) {
+    Candidate best_seen;
+    RunReport report;
+    if (run_evolution(options, 1, &best_seen, &report) != 0) {
+        return 1;
+    }
+    int exported = export_best(&best_seen, options, &report);
+    print_final_report(&best_seen, options, &report, exported);
     return exported ? 0 : 1;
+}
+
+static int compare_result_better(const CompareResult *a, const CompareResult *b) {
+    uint32_t a_severity = fail_severity(a->flags);
+    uint32_t b_severity = fail_severity(b->flags);
+    if (a_severity != b_severity) return a_severity < b_severity;
+    if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score;
+    if (a->quick_score != b->quick_score) return a->quick_score > b->quick_score;
+    return a->total_candidates > b->total_candidates;
+}
+
+static int write_compare_report(const CompareOptions *options, const CompareResult *results, uint32_t result_count) {
+    ensure_out_dir();
+    FILE *md = fopen("out/compare.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/compare.md\n");
+        return 0;
+    }
+
+    fprintf(md, "# hash-forge policy comparison\n\n");
+    fprintf(md, "## Settings\n\n");
+    fprintf(md, "- First seed: `%llu`\n", (unsigned long long)options->seed);
+    fprintf(md, "- Seed count: `%u`\n", options->seed_count);
+    fprintf(md, "- Generations per trial: `%llu`\n", (unsigned long long)options->generations);
+    fprintf(md, "- Threads: `%u`\n", options->threads);
+    fprintf(md, "- Quality: `%s`\n\n", quality_name(options->quality));
+
+    fprintf(md, "## Results\n\n");
+    fprintf(md, "| policy | seed | deep | quick | flags | flag names | total candidates | refreshes | unique last gen | best id |\n");
+    fprintf(md, "|---|---:|---:|---:|---|---|---:|---:|---:|---|\n");
+    for (uint32_t i = 0; i < result_count; i++) {
+        fprintf(md, "| %s | %llu | %lld | %lld | `0x%x` | ",
+                results[i].policy,
+                (unsigned long long)results[i].seed,
+                (long long)results[i].deep_score,
+                (long long)results[i].quick_score,
+                results[i].flags);
+        print_fail_flags(md, results[i].flags);
+        fprintf(md, " | %llu | %llu | %u | `%llx` |\n",
+                (unsigned long long)results[i].total_candidates,
+                (unsigned long long)results[i].stagnation_refreshes,
+                results[i].last_unique_candidates,
+                (unsigned long long)results[i].best_id);
+    }
+
+    fprintf(md, "\n## Interpretation\n\n");
+    fprintf(md, "This is a deterministic short-run policy comparison. Treat it as local tuning evidence, not proof that one policy dominates all future runs.\n");
+    fclose(md);
+    return 1;
+}
+
+static int command_compare(const CompareOptions *options) {
+    static const struct {
+        const char *name;
+        int no_starter;
+        int no_refresh;
+    } policies[] = {
+        { "default", 0, 0 },
+        { "no-starter", 1, 0 },
+        { "no-refresh", 0, 1 },
+        { "bare", 1, 1 }
+    };
+
+    CompareResult results[MAX_COMPARE_SEEDS * 4];
+    uint32_t result_count = 0;
+    uint32_t best_index = 0;
+
+    printf("\n%s%sHash Forge policy compare%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %sseeds%s        %llu..%llu\n", c_dim(), c_reset(),
+           (unsigned long long)options->seed,
+           (unsigned long long)(options->seed + options->seed_count - 1u));
+    printf("  %sgenerations%s  %llu\n", c_dim(), c_reset(), (unsigned long long)options->generations);
+    printf("  %sthreads%s      %u\n", c_dim(), c_reset(), options->threads);
+    printf("  %squality%s      %s\n\n", c_dim(), c_reset(), quality_name(options->quality));
+    printf("%s%-11s  %8s  %12s  %12s  %5s  %10s  %8s  %16s%s\n",
+           c_dim(), "policy", "seed", "deep", "quick", "flags", "candidates", "unique", "best id", c_reset());
+
+    for (uint32_t s = 0; s < options->seed_count; s++) {
+        for (uint32_t p = 0; p < sizeof(policies) / sizeof(policies[0]); p++) {
+            RunOptions run_options;
+            memset(&run_options, 0, sizeof(run_options));
+            run_options.seed = options->seed + s;
+            run_options.generations = options->generations;
+            run_options.threads = options->threads;
+            run_options.quality = options->quality;
+            run_options.have_seed = 1;
+            run_options.have_threads = 1;
+            run_options.no_starter = policies[p].no_starter;
+            run_options.no_refresh = policies[p].no_refresh;
+
+            Candidate best;
+            RunReport report;
+            if (run_evolution(&run_options, 0, &best, &report) != 0) {
+                return 1;
+            }
+
+            CompareResult *result = &results[result_count++];
+            result->policy = policies[p].name;
+            result->seed = run_options.seed;
+            result->best_id = best.id;
+            result->quick_score = best.quick_score;
+            result->deep_score = best.deep_score;
+            result->flags = best.fail_flags;
+            result->total_candidates = report.quick_candidates_evaluated + report.deep_candidates_evaluated;
+            result->stagnation_refreshes = report.stagnation_refreshes;
+            result->last_unique_candidates = report.last_unique_candidates;
+            if (result_count == 1 || compare_result_better(result, &results[best_index])) {
+                best_index = result_count - 1;
+            }
+
+            printf("%-11s  %8llu  %12lld  %12lld  0x%02x  %10llu  %8u  %s%016llx%s\n",
+                   result->policy,
+                   (unsigned long long)result->seed,
+                   (long long)result->deep_score,
+                   (long long)result->quick_score,
+                   result->flags,
+                   (unsigned long long)result->total_candidates,
+                   result->last_unique_candidates,
+                   c_cyan(), (unsigned long long)result->best_id, c_reset());
+        }
+    }
+
+    int wrote = write_compare_report(options, results, result_count);
+    printf("\n%s%sCompare complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %sbest policy%s  %s seed %llu deep %lld flags 0x%x\n",
+           c_dim(), c_reset(),
+           results[best_index].policy,
+           (unsigned long long)results[best_index].seed,
+           (long long)results[best_index].deep_score,
+           results[best_index].flags);
+    printf("  %soutput%s       %s\n", c_dim(), c_reset(), wrote ? "out/compare.md" : "export failed");
+    return wrote ? 0 : 1;
 }
 
 static int write_bench_report(const BenchOptions *options, const BenchResult *results, uint32_t result_count) {
@@ -2552,6 +2720,7 @@ static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
     printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh]\n", program);
+    printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s history [--top <n>]\n", program);
     printf("  %s export-best\n", program);
@@ -2679,6 +2848,61 @@ static int parse_bench_options(int argc, char **argv, BenchOptions *options) {
     return 1;
 }
 
+static int parse_compare_options(int argc, char **argv, CompareOptions *options) {
+    memset(options, 0, sizeof(*options));
+    options->seed = 123;
+    options->seed_count = 3;
+    options->generations = 25;
+    options->quality = QUALITY_NORMAL;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->seed)) {
+                fprintf(stderr, "invalid --seed value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--seeds") == 0 && i + 1 < argc) {
+            uint64_t seed_count = 0;
+            if (!parse_u64(argv[++i], &seed_count) || seed_count == 0 || seed_count > MAX_COMPARE_SEEDS) {
+                fprintf(stderr, "invalid --seeds value\n");
+                return 0;
+            }
+            options->seed_count = (uint32_t)seed_count;
+        } else if (strcmp(argv[i], "--generations") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->generations) || options->generations == 0) {
+                fprintf(stderr, "invalid --generations value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            uint64_t threads = 0;
+            if (!parse_u64(argv[++i], &threads) || threads == 0) {
+                fprintf(stderr, "invalid --threads value\n");
+                return 0;
+            }
+            options->threads = clamp_thread_count(threads, POPULATION_SIZE);
+            options->have_threads = 1;
+        } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
+            const char *quality = argv[++i];
+            if (strcmp(quality, "quick") == 0) {
+                options->quality = QUALITY_QUICK;
+            } else if (strcmp(quality, "normal") == 0) {
+                options->quality = QUALITY_NORMAL;
+            } else if (strcmp(quality, "deep") == 0) {
+                options->quality = QUALITY_DEEP;
+            } else {
+                fprintf(stderr, "invalid --quality value\n");
+                return 0;
+            }
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    if (!options->have_threads) {
+        options->threads = default_thread_count();
+    }
+    return 1;
+}
+
 static int parse_history_options(int argc, char **argv, HistoryOptions *options) {
     memset(options, 0, sizeof(*options));
     options->top = 10;
@@ -2735,6 +2959,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_bench(&options);
+    }
+
+    if (strcmp(argv[1], "compare") == 0) {
+        CompareOptions options;
+        if (!parse_compare_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_compare(&options);
     }
 
     if (strcmp(argv[1], "history") == 0) {

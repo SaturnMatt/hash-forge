@@ -302,6 +302,7 @@ hash-forge run --seed 123 --seconds 60 --threads 8
 hash-forge run --seed 123 --seconds 60 --threads auto
 hash-forge run --seed 123 --seconds 60 --quality deep
 hash-forge run --seed 123 --generations 100 --no-starter --no-refresh
+hash-forge compare --seed 123 --seeds 3 --generations 25 --threads 4
 hash-forge bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 hash-forge history --top 10
 hash-forge export-best
@@ -320,6 +321,10 @@ selects the fastest observed worker count for that run.
 and deep-score leader count. `normal` is the default.
 `--no-starter` and `--no-refresh` disable the compact starter lane and adaptive
 stagnation refresh for deterministic comparison runs.
+
+`compare` runs deterministic short policy trials for default, no-starter,
+no-refresh, and bare settings across one or more seeds. It should print a
+compact table and write `out/compare.md`.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
@@ -359,6 +364,7 @@ out/history.csv
 out/history.md
 out/summary.txt
 out/bench.md
+out/compare.md
 ```
 
 `best.c` should be a standalone exported C function, independent of the VM.
@@ -427,8 +433,8 @@ seeded generation-limited runs across single-threaded and threaded scoring,
 stress worker counts including default and over-cap values, verify report and
 summary contents, check auto-thread selection, check time-limited run contracts,
 check quality modes, verify benchmark output and `out/bench.md`, verify history
-leaderboard output and `out/history.md`, and compile `out/best.c` as standalone
-C.
+leaderboard output and `out/history.md`, verify policy comparison output and
+`out/compare.md`, and compile `out/best.c` as standalone C.
 
 `scripts/smoke.ps1` should remain a convenient entry point to the strict suite
 so the familiar smoke command verifies outputs, not just process exit codes.

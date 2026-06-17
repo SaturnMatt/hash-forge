@@ -55,6 +55,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-starter --no-refresh
+.\build\hash-forge.exe compare --seed 123 --seeds 3 --generations 25 --threads 4
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 .\build\hash-forge.exe history --top 10
 .\build\hash-forge.exe export-best
@@ -95,6 +96,7 @@ out\history.csv
 out\history.md
 out\summary.txt
 out\bench.md
+out\compare.md
 ```
 
 `out\best.c` is standalone C containing the exported winner.
@@ -125,6 +127,10 @@ starter/refresh policy used by each run.
 thread counts and quality modes, then writes `out\bench.md`. Benchmark rates
 are machine-local guidance for choosing thread counts, not hash quality scores.
 
+`compare` runs deterministic short A/B policy trials for default, no-starter,
+no-refresh, and bare settings across one or more seeds, then writes
+`out\compare.md`.
+
 ## Tests
 
 ```powershell
@@ -138,8 +144,8 @@ compares deterministic 100-generation runs across `--threads 1` and
 `--threads 4`, stress-checks worker counts including the default and over-cap
 values, verifies `--threads auto`, verifies `out/report.md` and
 `out/summary.txt`, checks quality modes, checks time-limited run contracts,
-verifies `bench` plus `out/bench.md`, verifies history leaderboard output, and
-compiles `out/best.c` independently.
+verifies `bench` plus `out/bench.md`, verifies policy comparison output,
+verifies history leaderboard output, and compiles `out/best.c` independently.
 
 `smoke.ps1` is a compatibility entry point that runs the same strict suite.
 
