@@ -238,4 +238,4 @@ longer generation budgets are needed to evaluate refresh strength.
 
 Commit hash:
 
-- Pending until the milestone commit is created.
+- `d6f9a80 Add policy comparison mode`
