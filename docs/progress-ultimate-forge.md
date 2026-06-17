@@ -122,4 +122,4 @@ the need for Milestone 5 best-deep-seen retention.
 
 Commit hash:
 
-- Pending until the milestone commit is created.
+- `cc25afd Add improvement telemetry`
