@@ -268,7 +268,7 @@ Commit:
 
 ## Milestone 8: Best hash database
 
-Status: in progress.
+Status: completed.
 
 Intended files:
 
@@ -414,4 +414,4 @@ and returned verification to zero stale scores.
 
 Commit:
 
-- pending
+- `484cccf Add best hash database`
