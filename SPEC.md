@@ -1,0 +1,331 @@
+# hash-forge specification
+
+## Summary
+
+hash-forge is a tiny native C project for discovering fast 64-bit hash
+functions through evolutionary search.
+
+The program evolves small hash programs in memory. Each candidate is a short
+sequence of simple integer operations over `key`, `seed`, `hash`, and a few
+scratch registers. Candidates run inside a compact VM/evaluator, are scored
+against hash-quality tests inspired by the earlier `hash64` experiment, and the
+best candidates are mutated into future generations.
+
+The first real implementation should be small, fast, deterministic when given a
+seed, and useful as a local experiment harness. It should not depend on JIT
+compilation, generated batch compilation, external databases, or a large build
+system.
+
+## Core Goals
+
+- Discover high-quality 64-bit hash functions for `(uint64_t key, uint64_t seed)`.
+- Keep the hot loop in RAM: candidate programs, populations, scores, and test
+  state live in process memory during a run.
+- Make speed a first-class design constraint.
+- Keep the codebase tiny and readable.
+- Preserve the spirit of hash64 without copying its implementation.
+- Support future multithreading without requiring it in v1.
+- Export winning candidates as plain C functions.
+
+## Non-Goals For V1
+
+- No JIT compiler.
+- No generated batch C compilation loop.
+- No SQLite or durable database.
+- No GUI.
+- No cryptographic hash claims.
+- No cross-platform abstraction layer beyond ordinary C where convenient.
+
+## Language And Build
+
+- Language: C11.
+- Platform: native Windows x64.
+- Compiler: MSYS2 UCRT64 GCC.
+- Build style: simple `build.ps1`; no CMake until needed.
+
+Suggested release flags:
+
+```txt
+-std=c11 -O3 -march=native -flto -fomit-frame-pointer -DNDEBUG
+```
+
+Suggested debug flags:
+
+```txt
+-std=c11 -O0 -g -Wall -Wextra
+```
+
+## Candidate Hash Model
+
+Each candidate is a small VM program with this logical shape:
+
+```c
+uint64_t candidate(uint64_t key, uint64_t seed);
+```
+
+VM registers:
+
+```txt
+0: key
+1: seed
+2: hash
+3: a
+4: b
+```
+
+Initial state:
+
+```txt
+key  = input key
+seed = input seed
+hash = 0
+a    = 0
+b    = 0
+```
+
+Return value:
+
+```txt
+hash
+```
+
+V1 operation set:
+
+```txt
+MOV   dst = operand
+ADD   dst += operand
+MUL   dst *= operand
+XOR   dst ^= operand
+SHL   dst <<= imm_shift
+SHR   dst >>= imm_shift
+ROTL  dst = rotl64(dst, imm_shift)
+ROTR  dst = rotr64(dst, imm_shift)
+```
+
+Operand forms:
+
+```txt
+register operand: one of key, seed, hash, a, b
+constant operand: uint64_t immediate
+shift operand: integer 1..63
+```
+
+V1 generator constraints:
+
+- Candidate length defaults to 8..16 instructions.
+- `MUL` constants should usually be odd.
+- Shift and rotate amounts must be 1..63.
+- Bias toward operations that affect `hash`.
+- Reject or heavily penalize candidates that never write `hash`.
+
+## VM And Runtime
+
+The evaluator should be a small function that executes one candidate for one
+`key, seed` pair.
+
+Design priorities:
+
+- No heap allocation in the evaluator.
+- No file I/O in scoring hot loops.
+- No function pointers inside the per-instruction loop.
+- Use `uint64_t` unsigned overflow semantics.
+- Keep register storage fixed-size, such as `uint64_t r[5]`.
+- Mark tiny helpers `static inline`.
+- Keep rotates well-defined for shifts 1..63.
+
+The first implementation can use a switch over opcode. Later profiling can
+decide whether a threaded interpreter or specialized evaluator is worthwhile.
+
+## Randomness And Reproducibility
+
+Runs must be deterministic when given a seed.
+
+Use a fast local PRNG such as SplitMix64 or xoshiro. Do not use `rand()`.
+
+Requirements:
+
+- CLI accepts a run seed.
+- Candidate generation and mutation derive from that seed.
+- Test input generation derives from deterministic per-test/per-candidate seeds.
+- Re-running the same version with the same seed and settings should produce
+  the same sequence of candidates and scores.
+
+## Evolution Loop
+
+V1 uses a single-threaded continuous evolutionary loop.
+
+Default parameters:
+
+```txt
+population_size: 256
+survivor_count: 32
+mutations_per_child: 1..3
+instruction_count: 8..16
+status_interval_ms: 1000
+deep_score_interval_generations: 25
+deep_score_top_n: 8
+```
+
+Loop:
+
+1. Initialize a population of random candidates.
+2. Quick-score every candidate.
+3. Sort/rank by quick score, fail flags, instruction count, and speed.
+4. Keep the top survivors.
+5. Fill the rest of the population with mutated children of survivors.
+6. Periodically deep-score current leaders.
+7. Print compact live status.
+8. Continue until stopped or until an optional generation limit is reached.
+
+Mutation actions:
+
+```txt
+change opcode
+change destination register
+change operand register
+change constant
+change shift amount
+swap two instructions
+insert instruction, if below max length
+remove instruction, if above min length
+```
+
+## Test Suite
+
+The tests are inspired by hash64's coverage style, but implemented fresh.
+
+### Zero Behavior
+
+Probe small special cases:
+
+```txt
+hash(0, 0)
+hash(0, 1)
+hash(1, 0)
+hash(1, 1)
+```
+
+Fail or penalize repeated trivial outputs and obvious identity values.
+
+### Collision Patterns
+
+Score collision count across mixed inputs:
+
+```txt
+hash(0, random)
+hash(random, 0)
+hash(constant, random)
+hash(random, constant)
+hash(random1, random2)
+hash(random2, random1)
+hash(seq, 0)
+hash(0, seq)
+hash(seq1, seq2)
+hash(seq2, seq1)
+recursive: h = hash(h, seed)
+recursive: h = hash(key, h)
+recursive: h = hash(h, h)
+```
+
+### Bucket Distribution
+
+For bucket counts 2..64, feed sequential keys and sequential seeds into the
+candidate and count `hash % bucket_count`.
+
+Variants:
+
+```txt
+key changes, seed fixed
+seed changes, key fixed
+```
+
+### Avalanche
+
+For each input bit, flip that bit and compare output difference.
+
+Variants:
+
+```txt
+key bit flipped, random inputs
+seed bit flipped, random inputs
+key bit flipped, sequential inputs
+seed bit flipped, sequential inputs
+both key and seed bit flipped
+```
+
+Score how close output bit flips are to 50%.
+
+### Speed Telemetry
+
+Run a tight loop over candidate evaluation and time it. Use speed as telemetry
+and tie-breaker rather than the primary quality score in v1.
+
+## CLI
+
+V1 target commands:
+
+```txt
+hash-forge self-test
+hash-forge run --seed 123
+hash-forge run --seed 123 --generations 1000
+hash-forge export-best
+```
+
+`run` starts evolution, prints live status, keeps the active population in RAM,
+and writes the best candidate on normal exit or interrupt.
+
+`self-test` checks intentionally bad hashes and baseline mixers so the test
+suite can prove it rejects obvious failures.
+
+## Output And Persistence
+
+The hot loop should not depend on disk.
+
+During a normal run:
+
+- Population lives in RAM.
+- Scores live in RAM.
+- Test scratch buffers live in RAM.
+- Status goes to stdout.
+
+Durable output should be minimal and explicit:
+
+```txt
+out/best.c
+out/best.txt
+out/summary.txt
+```
+
+`best.c` should be a standalone exported C function, independent of the VM.
+
+## Future Multithreading
+
+Do not implement multithreading in v1, but preserve the path.
+
+Future threading model:
+
+- Split candidate scoring across worker threads.
+- Each worker owns scratch buffers and PRNG state.
+- No shared writes in the hot test loop.
+- Main thread merges scores after workers finish.
+
+Avoid global mutable test state in v1.
+
+## First Milestone
+
+The first useful milestone is:
+
+```txt
+hash-forge self-test
+hash-forge run --seed 123 --generations 100
+```
+
+Acceptance criteria:
+
+- Project builds with one command.
+- Self-test passes.
+- A seeded short run is deterministic.
+- Evolution prints live status.
+- At least one best candidate is exported to `out/best.c`.
+- The exported candidate compiles as plain C.
+- The implementation remains small enough to understand in one sitting.
