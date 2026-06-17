@@ -5,7 +5,7 @@ source split, artifact hygiene, and best-hash database.
 
 ## Milestone 6: Clean source split
 
-Status: in progress.
+Status: completed.
 
 Intended files:
 
@@ -137,4 +137,4 @@ policy, or CLI contracts changed.
 
 Commit:
 
-- pending
+- `e07499e Split hash forge source modules`
