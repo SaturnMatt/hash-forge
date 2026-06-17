@@ -12,31 +12,19 @@ small hash-table support module used by tests.
 
 ## Toolchain
 
-Preferred compiler:
+Compiler:
 
 ```txt
-MSYS2 UCRT64 GCC
+Visual Studio C via Visual Studio 2022 Build Tools
 ```
 
-Expected GCC path:
+`build.ps1` locates the installed Build Tools with `vswhere`, opens the x64
+developer environment, and invokes `cl`.
+
+Required component:
 
 ```txt
-C:\msys64\ucrt64\bin\gcc.exe
-```
-
-If GCC is not installed yet, `build.ps1` falls back to Visual Studio C Build
-Tools when available. GCC remains the preferred release toolchain.
-
-If MSYS2 is missing:
-
-```powershell
-winget install MSYS2.MSYS2
-```
-
-Then from the MSYS2 UCRT64 shell:
-
-```sh
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+Microsoft.VisualStudio.Component.VC.Tools.x86.x64
 ```
 
 ## Build

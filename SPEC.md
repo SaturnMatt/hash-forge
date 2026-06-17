@@ -40,19 +40,19 @@ system.
 
 - Language: C11.
 - Platform: native Windows x64.
-- Compiler: MSYS2 UCRT64 GCC.
+- Compiler: Visual Studio C through the local VS 2022 Build Tools.
 - Build style: simple `build.ps1`; no CMake until needed.
 
-Suggested release flags:
+Release flags:
 
 ```txt
--std=c11 -O3 -march=native -flto -fomit-frame-pointer -DNDEBUG
+/nologo /TC /std:c11 /O2 /DNDEBUG
 ```
 
-Suggested debug flags:
+Debug flags:
 
 ```txt
--std=c11 -O0 -g -Wall -Wextra
+/nologo /TC /std:c11 /Od /Zi /W4
 ```
 
 ## Candidate Hash Model

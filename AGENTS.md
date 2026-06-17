@@ -26,7 +26,7 @@ and fast RAM-resident loops over framework-heavy structure.
 
 - Use C11.
 - Target native Windows x64.
-- Prefer MSYS2 UCRT64 GCC.
+- Use Visual Studio C through the local VS 2022 Build Tools.
 - Keep the hot loop free of file I/O and heap churn.
 - Add comments only where they clarify non-obvious logic.
 - Do not copy the old `hash64` implementation; use it only as inspiration.
