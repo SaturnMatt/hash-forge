@@ -80,7 +80,9 @@ out\best.c
 out\best.txt
 out\report.md
 out\runs\*.md
+out\runs\*.c
 out\latest_report_path.txt
+out\latest_export_path.txt
 out\history.csv
 out\summary.txt
 out\bench.md
@@ -97,6 +99,8 @@ comparison scores, plus quick, deep, and total candidate hash functions
 evaluated during the run.
 `out\runs\*.md` stores archived per-run copies of completed reports, while
 `out\latest_report_path.txt` points to the latest archived report.
+`out\runs\*.c` stores archived per-run standalone C exports, while
+`out\latest_export_path.txt` points to the latest archived export.
 `out\history.csv` is a compact append-only index of completed runs for quick
 comparison across seeds, qualities, thread counts, scores, and candidate ids.
 

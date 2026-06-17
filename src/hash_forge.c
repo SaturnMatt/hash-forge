@@ -721,6 +721,29 @@ static int ensure_out_runs_dir(void) {
     return 1;
 }
 
+static int copy_file_bytes(const char *from_path, const char *to_path) {
+    FILE *from = fopen(from_path, "rb");
+    if (!from) return 0;
+    FILE *to = fopen(to_path, "wb");
+    if (!to) {
+        fclose(from);
+        return 0;
+    }
+    char buffer[8192];
+    size_t got = 0;
+    int ok = 1;
+    while ((got = fread(buffer, 1, sizeof(buffer), from)) > 0) {
+        if (fwrite(buffer, 1, got, to) != got) {
+            ok = 0;
+            break;
+        }
+    }
+    if (ferror(from)) ok = 0;
+    fclose(from);
+    fclose(to);
+    return ok;
+}
+
 static void print_fail_flags(FILE *out, uint32_t flags) {
     int wrote = 0;
     if (flags == 0) {
@@ -858,9 +881,11 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "## Output files\n\n");
     fprintf(md, "- `out/best.c`: standalone C hash function\n");
     fprintf(md, "- `out/best.txt`: compact machine-readable-ish best candidate details\n");
-    fprintf(md, "- `out/report.md`: full human-readable run report\n");
+    fprintf(md, "- `out/report.md`: latest full human-readable run report\n");
     fprintf(md, "- `out/runs/*.md`: archived per-run reports\n");
+    fprintf(md, "- `out/runs/*.c`: archived per-run standalone C exports\n");
     fprintf(md, "- `out/latest_report_path.txt`: path to the latest archived report\n");
+    fprintf(md, "- `out/latest_export_path.txt`: path to the latest archived C export\n");
     fprintf(md, "- `out/history.csv`: compact append-only run history\n");
     fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
 
@@ -1023,26 +1048,36 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     }
 
     ensure_out_runs_dir();
-    char archive_path[256];
+    char archive_stem[256];
+    char archive_report_path[320];
+    char archive_c_path[320];
     unsigned long long elapsed_ms = (unsigned long long)(report->elapsed_seconds * 1000.0 + 0.5);
-    snprintf(archive_path, sizeof(archive_path),
-             "out/runs/seed_%llu_gen_%llu_ms_%llu_threads_%u_id_%llx.md",
+    snprintf(archive_stem, sizeof(archive_stem),
+             "out/runs/seed_%llu_gen_%llu_ms_%llu_threads_%u_id_%llx",
              (unsigned long long)options->seed,
              (unsigned long long)report->run_generation,
              elapsed_ms,
              report->threads,
              (unsigned long long)candidate->id);
+    snprintf(archive_report_path, sizeof(archive_report_path), "%s.md", archive_stem);
+    snprintf(archive_c_path, sizeof(archive_c_path), "%s.c", archive_stem);
 
     int wrote_latest = write_markdown_report_to_path(candidate, options, report, "out/report.md");
-    int wrote_archive = write_markdown_report_to_path(candidate, options, report, archive_path);
-    if (wrote_latest && wrote_archive) {
+    int wrote_archive = write_markdown_report_to_path(candidate, options, report, archive_report_path);
+    int copied_c_archive = copy_file_bytes("out/best.c", archive_c_path);
+    if (wrote_latest && wrote_archive && copied_c_archive) {
         FILE *archive_note = fopen("out/latest_report_path.txt", "wb");
         if (archive_note) {
-            fprintf(archive_note, "%s\n", archive_path);
+            fprintf(archive_note, "%s\n", archive_report_path);
+            fclose(archive_note);
+        }
+        archive_note = fopen("out/latest_export_path.txt", "wb");
+        if (archive_note) {
+            fprintf(archive_note, "%s\n", archive_c_path);
             fclose(archive_note);
         }
     }
-    return wrote_latest && wrote_archive;
+    return wrote_latest && wrote_archive && copied_c_archive;
 }
 
 static void make_reasonable_baseline(Candidate *candidate) {
@@ -1635,7 +1670,7 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
     printf("  %sbest flags%s         %s0x%x%s (", c_dim(), c_reset(), candidate->fail_flags ? c_yellow() : c_green(), candidate->fail_flags, c_reset());
     print_fail_flags(stdout, candidate->fail_flags);
     printf(")\n");
-    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/runs/*.md, out/summary.txt" : "export failed");
+    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/runs/*, out/summary.txt" : "export failed");
 }
 
 static int command_self_test(void) {

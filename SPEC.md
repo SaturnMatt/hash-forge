@@ -325,7 +325,9 @@ out/best.c
 out/best.txt
 out/report.md
 out/runs/*.md
+out/runs/*.c
 out/latest_report_path.txt
+out/latest_export_path.txt
 out/history.csv
 out/summary.txt
 out/bench.md
@@ -339,6 +341,8 @@ including quick, deep, and total candidate hash functions evaluated, plus a
 best-candidate operator histogram and baseline comparison scores.
 The latest report remains at `out/report.md`; completed runs should also archive
 a copy under `out/runs/`, with `out/latest_report_path.txt` pointing to it.
+The latest export remains at `out/best.c`; completed runs should also archive a
+copy under `out/runs/`, with `out/latest_export_path.txt` pointing to it.
 Completed runs should append one compact metrics row to `out/history.csv`.
 
 ## Multithreading
