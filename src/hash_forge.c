@@ -272,12 +272,10 @@ static uint64_t rotr64(uint64_t x, unsigned n) {
 }
 
 static int popcount64(uint64_t x) {
-    int count = 0;
-    while (x) {
-        x &= x - 1;
-        count++;
-    }
-    return count;
+    x = x - ((x >> 1) & 0x5555555555555555ull);
+    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
+    x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0full;
+    return (int)((x * 0x0101010101010101ull) >> 56);
 }
 
 static const char *op_name(uint8_t op) {
@@ -1428,6 +1426,12 @@ static int self_check(int condition, const char *name) {
 
 static int run_vm_self_tests(void) {
     Candidate c;
+    if (!self_check(popcount64(0ull) == 0, "popcount zero")) return 0;
+    if (!self_check(popcount64(1ull) == 1, "popcount one")) return 0;
+    if (!self_check(popcount64(0xffffffffffffffffull) == 64, "popcount all bits")) return 0;
+    if (!self_check(popcount64(0xaaaaaaaaaaaaaaaaull) == 32, "popcount alternating bits")) return 0;
+    if (!self_check(popcount64(0x8000000000000000ull) == 1, "popcount high bit")) return 0;
+
     Instruction mov_key[] = {
         { OP_MOV, 2, OPERAND_REG, 0, 1, 0 }
     };
