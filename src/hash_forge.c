@@ -526,6 +526,23 @@ static void crossover_candidate(Candidate *child, const Candidate *a, const Cand
     child->id = candidate_id(child);
 }
 
+static int candidate_id_exists(const Candidate *candidates, uint32_t count, uint64_t id) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (candidates[i].id == id) return 1;
+    }
+    return 0;
+}
+
+static void ensure_unique_candidate(Candidate *candidate, const Candidate *existing, uint32_t existing_count, Rng *rng) {
+    for (uint32_t attempt = 0; attempt < 8 && candidate_id_exists(existing, existing_count, candidate->id); attempt++) {
+        Candidate parent = *candidate;
+        mutate_candidate(candidate, &parent, rng);
+    }
+    if (candidate_id_exists(existing, existing_count, candidate->id)) {
+        random_candidate(candidate, rng);
+    }
+}
+
 static int collision_add(ScoreScratch *scratch, uint64_t h) {
     uint32_t mask = COLLISION_TABLE_SIZE - 1u;
     uint32_t at = (uint32_t)(h ^ (h >> 32)) & mask;
@@ -1476,6 +1493,16 @@ static int run_generation_self_tests(void) {
                         "crossover candidate determinism")) return 0;
     }
 
+    {
+        Candidate existing[1];
+        Candidate duplicate;
+        random_candidate(&existing[0], &a_rng);
+        duplicate = existing[0];
+        ensure_unique_candidate(&duplicate, existing, 1, &a_rng);
+        if (!self_check(candidate_is_valid(&duplicate), "unique repair candidate validity")) return 0;
+        if (!self_check(duplicate.id != existing[0].id, "unique repair changes duplicate id")) return 0;
+    }
+
     Rng op_rng = { 0x55aa55aa55aa55aaull };
     for (uint32_t i = 0; i < 512; i++) {
         Instruction ins;
@@ -1961,6 +1988,7 @@ static int command_run(const RunOptions *options) {
 
         for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
             next[i] = population[i];
+            ensure_unique_candidate(&next[i], next, i, &rng);
         }
         uint32_t immigrant_start = POPULATION_SIZE > IMMIGRANT_COUNT ? POPULATION_SIZE - IMMIGRANT_COUNT : SURVIVOR_COUNT;
         if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
@@ -1971,16 +1999,19 @@ static int command_run(const RunOptions *options) {
             uint32_t parent_index = r / SURVIVOR_COUNT;
             if (parent_index >= SURVIVOR_COUNT) parent_index = SURVIVOR_COUNT - 1;
             mutate_candidate(&next[i], &population[parent_index], &rng);
+            ensure_unique_candidate(&next[i], next, i, &rng);
         }
         for (uint32_t i = crossover_start; i < immigrant_start; i++) {
             uint32_t a = rng_range(&rng, SURVIVOR_COUNT);
             uint32_t b = rng_range(&rng, SURVIVOR_COUNT);
             crossover_candidate(&next[i], &population[a], &population[b], &rng);
+            ensure_unique_candidate(&next[i], next, i, &rng);
         }
         for (uint32_t i = immigrant_start; i < POPULATION_SIZE; i++) {
             random_candidate(&next[i], &rng);
             next[i].generation = (uint32_t)generation;
             next[i].id = candidate_id(&next[i]);
+            ensure_unique_candidate(&next[i], next, i, &rng);
         }
 
         Candidate *tmp = population;

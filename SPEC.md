@@ -177,9 +177,11 @@ Loop:
 5. Fill the rest of the population with mutated children of survivors.
 6. Reserve a small lane for crossover children from survivor pairs.
 7. Reserve a small tail for fresh random immigrants.
-8. Periodically deep-score current leaders.
-9. Print compact live status.
-10. Continue until stopped or until an optional generation limit is reached.
+8. Repair duplicate candidate ids in the next generation through extra mutation
+   or fresh random candidates.
+9. Periodically deep-score current leaders.
+10. Print compact live status.
+11. Continue until stopped or until an optional generation limit is reached.
 
 Mutation actions:
 

@@ -66,7 +66,9 @@ specific worker count. Worker threads and per-thread scratch buffers are created
 once at run start and reused for the whole run. Each generation keeps the top
 survivors, mutates most of the remaining population, recombines a small
 crossover lane from survivor pairs, and injects fresh random immigrants to
-preserve diversity. On completion it writes:
+preserve diversity. Duplicate candidate ids are repaired during breeding so a
+generation spends less budget rechecking identical programs. On completion it
+writes:
 Opcode generation is lightly biased toward mixing-heavy operations such as
 `XOR`, `MUL`, and rotates while keeping every VM operation reachable.
 Generated and mutated instructions are repaired to avoid obvious dead forms
