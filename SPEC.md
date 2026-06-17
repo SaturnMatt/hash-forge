@@ -268,14 +268,28 @@ V1 target commands:
 hash-forge self-test
 hash-forge run --seed 123
 hash-forge run --seed 123 --generations 1000
+hash-forge run --seed 123 --seconds 60
+hash-forge run --seed 123 --generations 1000 --seconds 60
+hash-forge run --seed 123 --seconds 60 --threads 8
+hash-forge bench --seconds 2 --threads 1,2,4,8,16,32
 hash-forge export-best
 ```
 
 `run` starts evolution, prints live status, keeps the active population in RAM,
-and writes the best candidate on normal exit or interrupt.
+and writes the best candidate on normal exit or interrupt. If both `--generations`
+and `--seconds` are provided, the run stops when either limit is reached.
+Scoring is split across worker threads by default, using the machine's processor
+count capped at 32. `--threads <n>` pins a run to a specific worker count.
+Worker threads and per-thread scratch buffers are created once at run start and
+reused for the whole run.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
+
+`bench` measures scoring throughput for one or more thread counts. It should
+time quick and deep scoring separately, print candidates/sec, and write
+`out/bench.md`. Benchmark results are machine-local tuning guidance, not hash
+quality scores.
 
 ## Output And Persistence
 
@@ -293,23 +307,26 @@ Durable output should be minimal and explicit:
 ```txt
 out/best.c
 out/best.txt
+out/report.md
 out/summary.txt
+out/bench.md
 ```
 
 `best.c` should be a standalone exported C function, independent of the VM.
+`report.md` should be the full human-readable report for the completed run,
+including quick, deep, and total candidate hash functions evaluated.
 
-## Future Multithreading
+## Multithreading
 
-Do not implement multithreading in v1, but preserve the path.
-
-Future threading model:
+Candidate scoring is the first threaded hot path:
 
 - Split candidate scoring across worker threads.
-- Each worker owns scratch buffers and PRNG state.
+- Each worker owns scratch buffers.
+- Worker threads persist for the whole run.
 - No shared writes in the hot test loop.
 - Main thread merges scores after workers finish.
 
-Avoid global mutable test state in v1.
+Avoid global mutable test state.
 
 ## First Milestone
 
@@ -329,3 +346,23 @@ Acceptance criteria:
 - At least one best candidate is exported to `out/best.c`.
 - The exported candidate compiles as plain C.
 - The implementation remains small enough to understand in one sitting.
+
+## Test Strategy
+
+`hash-forge self-test` should cover the core in-process invariants:
+
+- VM instruction behavior for MOV, ADD, MUL, XOR, shifts, and rotates.
+- Score calibration for constant, key-only, seed-only, xor-only, and baseline
+  mixer candidates.
+- Generator and mutation invariants: instruction bounds, valid opcodes and
+  registers, hash writes, stable ids, and deterministic seeded behavior.
+
+`scripts/test.ps1` is the strict executable-level suite. It should build the
+project, run self-test and support tests, assert CLI error output, compare
+seeded generation-limited runs across single-threaded and threaded scoring,
+stress worker counts including default and over-cap values, verify report and
+summary contents, check time-limited run contracts, verify benchmark output and
+`out/bench.md`, and compile `out/best.c` as standalone C.
+
+`scripts/smoke.ps1` should remain a convenient entry point to the strict suite
+so the familiar smoke command verifies outputs, not just process exit codes.

@@ -2,10 +2,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <direct.h>
+#include <process.h>
+#include <windows.h>
 #define HF_MKDIR(path) _mkdir(path)
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
 #else
 #include <sys/stat.h>
 #define HF_MKDIR(path) mkdir(path, 0755)
@@ -20,6 +26,8 @@
 #define DEEP_EVERY 25
 #define DEEP_TOP_N 8
 #define COLLISION_TABLE_SIZE 65536u
+#define MAX_SCORE_THREADS 32
+#define MAX_BENCH_THREAD_OPTIONS 16
 
 #define FAIL_ZERO       0x01u
 #define FAIL_COLLISION  0x02u
@@ -85,11 +93,110 @@ typedef struct ScoreResult {
 typedef struct RunOptions {
     uint64_t seed;
     uint64_t generations;
+    uint64_t seconds;
+    uint32_t threads;
     int have_seed;
+    int have_seconds;
+    int have_threads;
 } RunOptions;
+
+typedef struct RunReport {
+    uint64_t run_generation;
+    uint64_t quick_candidates_evaluated;
+    uint64_t deep_candidates_evaluated;
+    double elapsed_seconds;
+    const char *stop_reason;
+    uint32_t threads;
+} RunReport;
+
+typedef struct BenchOptions {
+    uint64_t seed;
+    uint64_t seconds;
+    uint32_t threads[MAX_BENCH_THREAD_OPTIONS];
+    uint32_t thread_count;
+    int have_seed;
+    int have_seconds;
+} BenchOptions;
+
+typedef struct BenchResult {
+    uint32_t requested_threads;
+    uint32_t actual_threads;
+    uint64_t quick_candidates;
+    uint64_t deep_candidates;
+    double quick_seconds;
+    double deep_seconds;
+    double quick_rate;
+    double deep_rate;
+} BenchResult;
+
+typedef struct ScoreTask {
+    Candidate *candidates;
+    uint32_t start;
+    uint32_t end;
+    uint64_t seed;
+    int deep;
+    ScoreScratch *scratch;
+} ScoreTask;
+
+typedef struct ScoreWorker {
+    ScoreTask task;
+#ifdef _WIN32
+    HANDLE thread;
+    HANDLE start_event;
+    HANDLE done_event;
+    volatile LONG should_stop;
+#endif
+} ScoreWorker;
+
+typedef struct ScorePool {
+    uint32_t thread_count;
+    ScoreWorker *workers;
+    ScoreScratch *scratches;
+} ScorePool;
 
 static const char *reg_names[REG_COUNT] = { "key", "seed", "hash", "a", "b" };
 static volatile int g_stop_requested = 0;
+static int g_color_enabled = 1;
+
+static const char *c_reset(void) { return g_color_enabled ? "\x1b[0m" : ""; }
+static const char *c_dim(void) { return g_color_enabled ? "\x1b[2m" : ""; }
+static const char *c_bold(void) { return g_color_enabled ? "\x1b[1m" : ""; }
+static const char *c_green(void) { return g_color_enabled ? "\x1b[32m" : ""; }
+static const char *c_yellow(void) { return g_color_enabled ? "\x1b[33m" : ""; }
+static const char *c_red(void) { return g_color_enabled ? "\x1b[31m" : ""; }
+static const char *c_cyan(void) { return g_color_enabled ? "\x1b[36m" : ""; }
+
+static void init_console_output(void) {
+#ifdef _WIN32
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (out == INVALID_HANDLE_VALUE || !GetConsoleMode(out, &mode)) {
+        g_color_enabled = 0;
+        return;
+    }
+    SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+#endif
+}
+
+static double elapsed_seconds_since(clock_t start_clock) {
+    return (double)(clock() - start_clock) / (double)CLOCKS_PER_SEC;
+}
+
+static double wall_seconds_now(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER frequency;
+    static int initialized = 0;
+    LARGE_INTEGER counter;
+    if (!initialized) {
+        QueryPerformanceFrequency(&frequency);
+        initialized = 1;
+    }
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    return (double)clock() / (double)CLOCKS_PER_SEC;
+#endif
+}
 
 static uint64_t splitmix64_next(Rng *rng) {
     uint64_t z = (rng->state += 0x9e3779b97f4a7c15ull);
@@ -484,16 +591,6 @@ static void print_instruction(FILE *out, const Instruction *ins, int c_syntax) {
     }
 }
 
-static void print_candidate_preview(const Candidate *candidate) {
-    printf("  ");
-    for (uint32_t i = 0; i < candidate->instruction_count && i < 4; i++) {
-        print_instruction(stdout, &candidate->instructions[i], 0);
-        if (i + 1 < candidate->instruction_count && i < 3) printf(" | ");
-    }
-    if (candidate->instruction_count > 4) printf(" | ...");
-    printf("\n");
-}
-
 static int ensure_out_dir(void) {
     if (HF_MKDIR("out") != 0) {
         /* Existing directory is fine; file creation below will catch real errors. */
@@ -501,7 +598,90 @@ static int ensure_out_dir(void) {
     return 1;
 }
 
-static int export_best(const Candidate *candidate, uint64_t seed, uint64_t generation) {
+static void print_fail_flags(FILE *out, uint32_t flags) {
+    int wrote = 0;
+    if (flags == 0) {
+        fprintf(out, "none");
+        return;
+    }
+    if (flags & FAIL_ZERO) { fprintf(out, "%sZERO", wrote ? ", " : ""); wrote = 1; }
+    if (flags & FAIL_COLLISION) { fprintf(out, "%sCOLLISION", wrote ? ", " : ""); wrote = 1; }
+    if (flags & FAIL_BUCKET) { fprintf(out, "%sBUCKET", wrote ? ", " : ""); wrote = 1; }
+    if (flags & FAIL_AVALANCHE) { fprintf(out, "%sAVALANCHE", wrote ? ", " : ""); wrote = 1; }
+    if (flags & FAIL_NO_HASH) { fprintf(out, "%sNO_HASH", wrote ? ", " : ""); wrote = 1; }
+}
+
+static int write_markdown_report(const Candidate *candidate, const RunOptions *options, const RunReport *report) {
+    FILE *md = fopen("out/report.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/report.md\n");
+        return 0;
+    }
+
+    fprintf(md, "# hash-forge run report\n\n");
+    fprintf(md, "## Run settings\n\n");
+    fprintf(md, "- Seed: `%llu`\n", (unsigned long long)options->seed);
+    fprintf(md, "- Requested generations: `%s", options->generations ? "" : "unlimited");
+    if (options->generations) fprintf(md, "%llu", (unsigned long long)options->generations);
+    fprintf(md, "`\n");
+    fprintf(md, "- Requested seconds: `%s", options->have_seconds ? "" : "unlimited");
+    if (options->have_seconds) fprintf(md, "%llu", (unsigned long long)options->seconds);
+    fprintf(md, "`\n");
+    fprintf(md, "- Actual generations completed: `%llu`\n", (unsigned long long)report->run_generation);
+    fprintf(md, "- Elapsed seconds: `%.3f`\n", report->elapsed_seconds);
+    fprintf(md, "- Stop reason: `%s`\n", report->stop_reason);
+    fprintf(md, "- Scoring threads: `%u`\n\n", report->threads);
+
+    fprintf(md, "## Evaluation totals\n\n");
+    fprintf(md, "- Quick candidates evaluated: `%llu`\n", (unsigned long long)report->quick_candidates_evaluated);
+    fprintf(md, "- Deep candidates evaluated: `%llu`\n", (unsigned long long)report->deep_candidates_evaluated);
+    fprintf(md, "- Total hash functions evaluated: `%llu`\n\n",
+            (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+
+    fprintf(md, "## Population settings\n\n");
+    fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
+    fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
+    fprintf(md, "- Scoring threads: `%u`\n", report->threads);
+    fprintf(md, "- Deep score cadence: every `%u` generations\n", DEEP_EVERY);
+    fprintf(md, "- Deep score top N: `%u`\n", DEEP_TOP_N);
+    fprintf(md, "- Instruction count range: `%u..%u`\n\n", MIN_PROGRAM_LEN, MAX_PROGRAM_LEN);
+
+    fprintf(md, "## Best candidate\n\n");
+    fprintf(md, "- ID: `%llx`\n", (unsigned long long)candidate->id);
+    fprintf(md, "- Parent ID: `%llx`\n", (unsigned long long)candidate->parent_id);
+    fprintf(md, "- Candidate generation: `%u`\n", candidate->generation);
+    fprintf(md, "- Instruction count: `%u`\n", candidate->instruction_count);
+    fprintf(md, "- Quick score: `%lld`\n", (long long)candidate->quick_score);
+    fprintf(md, "- Final deep score: `%lld`\n", (long long)candidate->deep_score);
+    fprintf(md, "- Fail flags: `0x%x` (", candidate->fail_flags);
+    print_fail_flags(md, candidate->fail_flags);
+    fprintf(md, ")\n\n");
+
+    fprintf(md, "## VM instruction listing\n\n");
+    fprintf(md, "```txt\n");
+    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
+        fprintf(md, "%02u: ", i);
+        print_instruction(md, &candidate->instructions[i], 0);
+        fprintf(md, "\n");
+    }
+    fprintf(md, "```\n\n");
+
+    fprintf(md, "## Exported C\n\n");
+    fprintf(md, "The standalone exported C function is written to `out/best.c`.\n\n");
+    fprintf(md, "## Output files\n\n");
+    fprintf(md, "- `out/best.c`: standalone C hash function\n");
+    fprintf(md, "- `out/best.txt`: compact machine-readable-ish best candidate details\n");
+    fprintf(md, "- `out/report.md`: full human-readable run report\n");
+    fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
+
+    fprintf(md, "## Interpretation note\n\n");
+    fprintf(md, "Scores and flags are exploratory quality signals for non-cryptographic hash search. ");
+    fprintf(md, "They are not cryptographic proof and should be treated as candidates for further testing.\n");
+    fclose(md);
+    return 1;
+}
+
+static int export_best(const Candidate *candidate, const RunOptions *options, const RunReport *report) {
     ensure_out_dir();
     FILE *c = fopen("out/best.c", "wb");
     if (!c) {
@@ -534,11 +714,16 @@ static int export_best(const Candidate *candidate, uint64_t seed, uint64_t gener
     fprintf(txt, "id: %llu\n", (unsigned long long)candidate->id);
     fprintf(txt, "parent_id: %llu\n", (unsigned long long)candidate->parent_id);
     fprintf(txt, "generation: %u\n", candidate->generation);
-    fprintf(txt, "run_generation: %llu\n", (unsigned long long)generation);
-    fprintf(txt, "seed: %llu\n", (unsigned long long)seed);
+    fprintf(txt, "run_generation: %llu\n", (unsigned long long)report->run_generation);
+    fprintf(txt, "seed: %llu\n", (unsigned long long)options->seed);
     fprintf(txt, "quick_score: %lld\n", (long long)candidate->quick_score);
     fprintf(txt, "deep_score: %lld\n", (long long)candidate->deep_score);
     fprintf(txt, "fail_flags: 0x%x\n", candidate->fail_flags);
+    fprintf(txt, "quick_candidates_evaluated: %llu\n", (unsigned long long)report->quick_candidates_evaluated);
+    fprintf(txt, "deep_candidates_evaluated: %llu\n", (unsigned long long)report->deep_candidates_evaluated);
+    fprintf(txt, "total_candidates_evaluated: %llu\n",
+            (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+    fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
     for (uint32_t i = 0; i < candidate->instruction_count; i++) {
         fprintf(txt, "%02u: ", i);
@@ -550,13 +735,17 @@ static int export_best(const Candidate *candidate, uint64_t seed, uint64_t gener
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u quick=%lld deep=%lld flags=0x%x\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu\n",
                 (unsigned long long)candidate->id, candidate->generation,
+                (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
-                candidate->fail_flags);
+                candidate->fail_flags, report->elapsed_seconds, report->stop_reason, report->threads,
+                (unsigned long long)report->quick_candidates_evaluated,
+                (unsigned long long)report->deep_candidates_evaluated,
+                (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
         fclose(summary);
     }
-    return 1;
+    return write_markdown_report(candidate, options, report);
 }
 
 static void make_reasonable_baseline(Candidate *candidate) {
@@ -596,50 +785,456 @@ static void make_constant_bad(Candidate *candidate) {
     candidate->deep_score = INT64_MIN;
 }
 
-static void score_population(Candidate population[POPULATION_SIZE], ScoreScratch *scratch, uint64_t seed, int deep) {
-    for (uint32_t i = 0; i < POPULATION_SIZE; i++) {
-        ScoreResult score = score_candidate(&population[i], scratch, seed, deep);
-        population[i].quick_score = score.score;
-        population[i].fail_flags = score.fail_flags;
-        population[i].speed_hint = score.eval_count / (population[i].instruction_count ? population[i].instruction_count : 1);
-        if (deep) {
-            population[i].deep_score = score.score;
+static void make_key_only_bad(Candidate *candidate) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->instruction_count = 1;
+    candidate->instructions[0] = (Instruction){ OP_MOV, 2, OPERAND_REG, 0, 1, 0 };
+    candidate->id = candidate_id(candidate);
+    candidate->deep_score = INT64_MIN;
+}
+
+static void make_seed_only_bad(Candidate *candidate) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->instruction_count = 1;
+    candidate->instructions[0] = (Instruction){ OP_MOV, 2, OPERAND_REG, 1, 1, 0 };
+    candidate->id = candidate_id(candidate);
+    candidate->deep_score = INT64_MIN;
+}
+
+static void make_xor_only_bad(Candidate *candidate) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->instruction_count = 2;
+    candidate->instructions[0] = (Instruction){ OP_MOV, 2, OPERAND_REG, 0, 1, 0 };
+    candidate->instructions[1] = (Instruction){ OP_XOR, 2, OPERAND_REG, 1, 1, 0 };
+    candidate->id = candidate_id(candidate);
+    candidate->deep_score = INT64_MIN;
+}
+
+static void make_program(Candidate *candidate, const Instruction *instructions, uint32_t instruction_count) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->instruction_count = instruction_count;
+    memcpy(candidate->instructions, instructions, instruction_count * sizeof(instructions[0]));
+    candidate->id = candidate_id(candidate);
+    candidate->deep_score = INT64_MIN;
+}
+
+static int candidate_is_valid(const Candidate *candidate) {
+    if (candidate->instruction_count < MIN_PROGRAM_LEN || candidate->instruction_count > MAX_PROGRAM_LEN) return 0;
+    if (!writes_hash(candidate)) return 0;
+    if (candidate->id != candidate_id(candidate)) return 0;
+    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
+        const Instruction *ins = &candidate->instructions[i];
+        if (ins->op >= OP_COUNT) return 0;
+        if (ins->dst >= REG_COUNT) return 0;
+        if (ins->operand_kind > OPERAND_CONST) return 0;
+        if (ins->operand_reg >= REG_COUNT) return 0;
+        if (ins->shift == 0 || ins->shift >= 64) return 0;
+        if ((ins->op == OP_SHL || ins->op == OP_SHR || ins->op == OP_ROTL || ins->op == OP_ROTR) &&
+            ins->operand_kind != OPERAND_CONST) return 0;
+        if (ins->op == OP_MUL && ins->operand_kind == OPERAND_CONST && (ins->constant & 1ull) == 0) return 0;
+    }
+    return 1;
+}
+
+static int self_check(int condition, const char *name) {
+    if (!condition) {
+        fprintf(stderr, "self-test failed: %s\n", name);
+        return 0;
+    }
+    return 1;
+}
+
+static int run_vm_self_tests(void) {
+    Candidate c;
+    Instruction mov_key[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 }
+    };
+    Instruction add_const[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_ADD, 2, OPERAND_CONST, 0, 1, 5 }
+    };
+    Instruction mul_const[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_MUL, 2, OPERAND_CONST, 0, 1, 3 }
+    };
+    Instruction xor_seed[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_XOR, 2, OPERAND_REG, 1, 1, 0 }
+    };
+    Instruction shl_hash[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_SHL, 2, OPERAND_CONST, 0, 4, 0 }
+    };
+    Instruction shr_hash[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_SHR, 2, OPERAND_CONST, 0, 4, 0 }
+    };
+    Instruction rotl_hash[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_ROTL, 2, OPERAND_CONST, 0, 8, 0 }
+    };
+    Instruction rotr_hash[] = {
+        { OP_MOV, 2, OPERAND_REG, 0, 1, 0 },
+        { OP_ROTR, 2, OPERAND_CONST, 0, 8, 0 }
+    };
+
+    make_program(&c, mov_key, 1);
+    if (!self_check(eval_candidate(&c, 0x1234ull, 0x99ull) == 0x1234ull, "VM MOV key")) return 0;
+    make_program(&c, add_const, 2);
+    if (!self_check(eval_candidate(&c, 0x1234ull, 0x99ull) == 0x1239ull, "VM ADD constant")) return 0;
+    make_program(&c, mul_const, 2);
+    if (!self_check(eval_candidate(&c, 0x1234ull, 0x99ull) == 0x369cull, "VM MUL constant")) return 0;
+    make_program(&c, xor_seed, 2);
+    if (!self_check(eval_candidate(&c, 0x1234ull, 0x99ull) == (0x1234ull ^ 0x99ull), "VM XOR seed")) return 0;
+    make_program(&c, shl_hash, 2);
+    if (!self_check(eval_candidate(&c, 0x1234ull, 0x99ull) == 0x12340ull, "VM SHL")) return 0;
+    make_program(&c, shr_hash, 2);
+    if (!self_check(eval_candidate(&c, 0x1234ull, 0x99ull) == 0x123ull, "VM SHR")) return 0;
+    make_program(&c, rotl_hash, 2);
+    if (!self_check(eval_candidate(&c, 0x0123456789abcdefull, 0x99ull) == rotl64(0x0123456789abcdefull, 8), "VM ROTL")) return 0;
+    make_program(&c, rotr_hash, 2);
+    if (!self_check(eval_candidate(&c, 0x0123456789abcdefull, 0x99ull) == rotr64(0x0123456789abcdefull, 8), "VM ROTR")) return 0;
+
+    printf("vm tests: pass\n");
+    return 1;
+}
+
+static int run_calibration_self_tests(void) {
+    typedef void (*Maker)(Candidate *);
+    typedef struct CalibrationCase {
+        const char *name;
+        Maker maker;
+        uint32_t expected_flags;
+    } CalibrationCase;
+
+    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
+    if (!scratch) {
+        fprintf(stderr, "failed to allocate score scratch\n");
+        return 0;
+    }
+
+    Candidate baseline;
+    make_reasonable_baseline(&baseline);
+    ScoreResult baseline_score = score_candidate(&baseline, scratch, 1234, 1);
+    printf("baseline_mixer score=%lld flags=0x%x\n", (long long)baseline_score.score, baseline_score.fail_flags);
+
+    if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_NO_HASH)) == 0,
+                    "baseline mixer core flags")) {
+        free(scratch);
+        return 0;
+    }
+
+    CalibrationCase cases[] = {
+        { "bad_constant", make_constant_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE },
+        { "bad_key_only", make_key_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE },
+        { "bad_seed_only", make_seed_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE },
+        { "bad_xor_only", make_xor_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE }
+    };
+
+    for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        Candidate bad;
+        cases[i].maker(&bad);
+        ScoreResult bad_score = score_candidate(&bad, scratch, 1234, 1);
+        printf("%s score=%lld flags=0x%x\n", cases[i].name, (long long)bad_score.score, bad_score.fail_flags);
+        if (!self_check((bad_score.fail_flags & cases[i].expected_flags) == cases[i].expected_flags,
+                        "bad hash expected flags")) {
+            free(scratch);
+            return 0;
+        }
+        if (!self_check(baseline_score.score > bad_score.score, "baseline ranks above bad hash")) {
+            free(scratch);
+            return 0;
+        }
+    }
+
+    free(scratch);
+    printf("calibration tests: pass\n");
+    return 1;
+}
+
+static int run_generation_self_tests(void) {
+    Rng a_rng = { 0x123456789abcdef0ull };
+    Rng b_rng = { 0x123456789abcdef0ull };
+
+    for (uint32_t i = 0; i < 128; i++) {
+        Candidate a;
+        Candidate b;
+        random_candidate(&a, &a_rng);
+        random_candidate(&b, &b_rng);
+        if (!self_check(candidate_is_valid(&a), "random candidate validity")) return 0;
+        if (!self_check(candidate_is_valid(&b), "random candidate validity duplicate")) return 0;
+        if (!self_check(a.id == b.id && a.instruction_count == b.instruction_count &&
+                        memcmp(a.instructions, b.instructions, a.instruction_count * sizeof(a.instructions[0])) == 0,
+                        "random candidate determinism")) return 0;
+
+        Rng ma_rng = { 0xfedcba9876543210ull + i };
+        Rng mb_rng = { 0xfedcba9876543210ull + i };
+        Candidate child_a;
+        Candidate child_b;
+        mutate_candidate(&child_a, &a, &ma_rng);
+        mutate_candidate(&child_b, &a, &mb_rng);
+        if (!self_check(candidate_is_valid(&child_a), "mutated candidate validity")) return 0;
+        if (!self_check(child_a.parent_id == a.id, "mutated candidate parent id")) return 0;
+        if (!self_check(child_a.generation == a.generation + 1, "mutated candidate generation")) return 0;
+        if (!self_check(child_a.id == child_b.id && child_a.instruction_count == child_b.instruction_count &&
+                        memcmp(child_a.instructions, child_b.instructions, child_a.instruction_count * sizeof(child_a.instructions[0])) == 0,
+                        "mutated candidate determinism")) return 0;
+    }
+
+    printf("generation tests: pass\n");
+    return 1;
+}
+
+static void score_candidate_range(ScoreTask *task) {
+    for (uint32_t i = task->start; i < task->end; i++) {
+        Candidate *candidate = &task->candidates[i];
+        ScoreResult score = score_candidate(candidate, task->scratch, task->seed, task->deep);
+        if (task->deep) {
+            candidate->deep_score = score.score;
+            candidate->fail_flags |= score.fail_flags;
+        } else {
+            candidate->quick_score = score.score;
+            candidate->fail_flags = score.fail_flags;
+            candidate->speed_hint = score.eval_count / (candidate->instruction_count ? candidate->instruction_count : 1);
         }
     }
 }
 
+#ifdef _WIN32
+static unsigned __stdcall score_thread_main(void *arg) {
+    ScoreWorker *worker = (ScoreWorker *)arg;
+    for (;;) {
+        WaitForSingleObject(worker->start_event, INFINITE);
+        if (InterlockedCompareExchange(&worker->should_stop, 0, 0)) {
+            break;
+        }
+        score_candidate_range(&worker->task);
+        SetEvent(worker->done_event);
+    }
+    return 0;
+}
+#endif
+
+static uint32_t default_thread_count(void) {
+#ifdef _WIN32
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    if (info.dwNumberOfProcessors == 0) return 1;
+    return info.dwNumberOfProcessors > MAX_SCORE_THREADS ? MAX_SCORE_THREADS : info.dwNumberOfProcessors;
+#else
+    return 1;
+#endif
+}
+
+static uint32_t clamp_thread_count(uint64_t requested, uint32_t candidate_count) {
+    uint64_t count = requested;
+    if (count == 0) count = default_thread_count();
+    if (count > MAX_SCORE_THREADS) count = MAX_SCORE_THREADS;
+#ifndef _WIN32
+    if (count > 1) count = 1;
+#endif
+    if (candidate_count != 0 && count > candidate_count) count = candidate_count;
+    if (count == 0) count = 1;
+    return (uint32_t)count;
+}
+
+static void score_pool_destroy(ScorePool *pool) {
+#ifdef _WIN32
+    if (pool->workers) {
+        for (uint32_t i = 0; i < pool->thread_count; i++) {
+            ScoreWorker *worker = &pool->workers[i];
+            if (worker->thread) {
+                InterlockedExchange(&worker->should_stop, 1);
+                SetEvent(worker->start_event);
+                WaitForSingleObject(worker->thread, INFINITE);
+                CloseHandle(worker->thread);
+            }
+            if (worker->start_event) CloseHandle(worker->start_event);
+            if (worker->done_event) CloseHandle(worker->done_event);
+        }
+    }
+#endif
+    free(pool->workers);
+    free(pool->scratches);
+    memset(pool, 0, sizeof(*pool));
+}
+
+static int score_pool_init(ScorePool *pool, uint32_t requested_threads, uint32_t candidate_count) {
+    memset(pool, 0, sizeof(*pool));
+    pool->thread_count = clamp_thread_count(requested_threads, candidate_count);
+    pool->workers = (ScoreWorker *)calloc(pool->thread_count, sizeof(*pool->workers));
+    pool->scratches = (ScoreScratch *)calloc(pool->thread_count, sizeof(*pool->scratches));
+    if (!pool->workers || !pool->scratches) {
+        score_pool_destroy(pool);
+        return 0;
+    }
+    for (uint32_t i = 0; i < pool->thread_count; i++) {
+        pool->workers[i].task.scratch = &pool->scratches[i];
+    }
+#ifdef _WIN32
+    if (pool->thread_count > 1) {
+        for (uint32_t i = 0; i < pool->thread_count; i++) {
+            ScoreWorker *worker = &pool->workers[i];
+            worker->start_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+            worker->done_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+            worker->thread = (HANDLE)_beginthreadex(NULL, 0, score_thread_main, worker, 0, NULL);
+            if (!worker->start_event || !worker->done_event || !worker->thread) {
+                score_pool_destroy(pool);
+                return 0;
+            }
+        }
+    }
+#endif
+    return 1;
+}
+
+static int score_pool_score(ScorePool *pool, Candidate *candidates, uint32_t candidate_count, uint64_t seed, int deep) {
+    uint32_t active_threads = clamp_thread_count(pool->thread_count, candidate_count);
+    if (active_threads == 1) {
+        ScoreTask *task = &pool->workers[0].task;
+        task->candidates = candidates;
+        task->start = 0;
+        task->end = candidate_count;
+        task->seed = seed;
+        task->deep = deep;
+        task->scratch = &pool->scratches[0];
+        score_candidate_range(task);
+        return 1;
+    }
+
+#ifdef _WIN32
+    HANDLE done_events[MAX_SCORE_THREADS];
+    for (uint32_t t = 0; t < active_threads; t++) {
+        ScoreWorker *worker = &pool->workers[t];
+        ScoreTask *task = &worker->task;
+        task->candidates = candidates;
+        task->start = (candidate_count * t) / active_threads;
+        task->end = (candidate_count * (t + 1)) / active_threads;
+        task->seed = seed;
+        task->deep = deep;
+        task->scratch = &pool->scratches[t];
+        ResetEvent(worker->done_event);
+        done_events[t] = worker->done_event;
+        SetEvent(worker->start_event);
+    }
+    return WaitForMultipleObjects(active_threads, done_events, TRUE, INFINITE) != WAIT_FAILED;
+#else
+    (void)active_threads;
+    ScoreTask *task = &pool->workers[0].task;
+    task->candidates = candidates;
+    task->start = 0;
+    task->end = candidate_count;
+    task->seed = seed;
+    task->deep = deep;
+    task->scratch = &pool->scratches[0];
+    score_candidate_range(task);
+    return 1;
+#endif
+}
+
+static int generation_limit_reached(const RunOptions *options, uint64_t generation) {
+    return options->generations != 0 && generation >= options->generations;
+}
+
+static int seconds_limit_reached(const RunOptions *options, clock_t start_clock) {
+    return options->have_seconds && elapsed_seconds_since(start_clock) >= (double)options->seconds;
+}
+
+static const char *stop_reason_for(const RunOptions *options, uint64_t generation, double elapsed_seconds) {
+    int hit_generation = generation_limit_reached(options, generation);
+    int hit_seconds = options->have_seconds && elapsed_seconds >= (double)options->seconds;
+    if (g_stop_requested) return "interrupted";
+    if (hit_generation && hit_seconds) return "generation and time limit";
+    if (hit_generation) return "generation limit";
+    if (hit_seconds) return "time limit";
+    return "stopped";
+}
+
+static void print_run_header(const RunOptions *options, uint32_t score_threads) {
+    printf("\n%s%sHash Forge run%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %sseed%s         %llu\n", c_dim(), c_reset(), (unsigned long long)options->seed);
+    printf("  %sgenerations%s  ", c_dim(), c_reset());
+    if (options->generations) printf("%llu\n", (unsigned long long)options->generations);
+    else printf("unlimited\n");
+    printf("  %sseconds%s      ", c_dim(), c_reset());
+    if (options->have_seconds) printf("%llu\n", (unsigned long long)options->seconds);
+    else printf("unlimited\n");
+    printf("  %sthreads%s      %u scoring worker%s\n", c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s");
+    printf("  %spopulation%s   %u candidates, %u survivors\n", c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT);
+    printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
+           c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
+}
+
+static void format_progress(const RunOptions *options, uint64_t generation, double elapsed, char *buffer, size_t size) {
+    if (options->generations) {
+        unsigned pct = (unsigned)((generation * 100u) / options->generations);
+        if (pct > 100u) pct = 100u;
+        snprintf(buffer, size, "%3u%% gen", pct);
+    } else if (options->have_seconds) {
+        unsigned pct = (unsigned)((elapsed * 100.0) / (double)options->seconds);
+        if (pct > 100u) pct = 100u;
+        snprintf(buffer, size, "%3u%% sec", pct);
+    } else {
+        snprintf(buffer, size, "open");
+    }
+}
+
+static void print_progress_line(const RunOptions *options, uint64_t generation, double elapsed, const Candidate *candidate, uint64_t quick_evals, uint64_t deep_evals) {
+    char deep_text[32];
+    char progress[24];
+    uint64_t total_evals = quick_evals + deep_evals;
+    double rate = elapsed > 0.0 ? (double)total_evals / elapsed : 0.0;
+    const char *flag_color = candidate->fail_flags ? c_yellow() : c_green();
+    if (candidate->deep_score == INT64_MIN) {
+        strcpy(deep_text, "pending");
+    } else {
+        sprintf(deep_text, "%lld", (long long)candidate->deep_score);
+    }
+    format_progress(options, generation, elapsed, progress, sizeof(progress));
+    printf("%s%6llu%s  %7.2fs  %10s  %10llu  %12lld  %12s  %s0x%02x%s  %3u  %s%016llx%s  %s%.0f/s%s\n",
+           c_bold(),
+           (unsigned long long)generation,
+           c_reset(),
+           elapsed,
+           progress,
+           (unsigned long long)total_evals,
+           (long long)candidate->quick_score,
+           deep_text,
+           flag_color,
+           candidate->fail_flags,
+           c_reset(),
+           candidate->instruction_count,
+           c_cyan(),
+           (unsigned long long)candidate->id,
+           c_reset(),
+           c_dim(),
+           rate,
+           c_reset());
+}
+
+static void print_final_report(const Candidate *candidate, const RunReport *report, int exported) {
+    printf("\n%s%sRun complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %sstop reason%s        %s\n", c_dim(), c_reset(), report->stop_reason);
+    printf("  %selapsed%s            %.3fs\n", c_dim(), c_reset(), report->elapsed_seconds);
+    printf("  %sgenerations%s        %llu\n", c_dim(), c_reset(), (unsigned long long)report->run_generation);
+    printf("  %sthreads%s            %u scoring worker%s\n", c_dim(), c_reset(), report->threads, report->threads == 1 ? "" : "s");
+    printf("  %squick evals%s        %llu\n", c_dim(), c_reset(), (unsigned long long)report->quick_candidates_evaluated);
+    printf("  %sdeep evals%s         %llu\n", c_dim(), c_reset(), (unsigned long long)report->deep_candidates_evaluated);
+    printf("  %stotal evaluated%s    %llu candidate hash functions\n", c_dim(), c_reset(),
+           (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+    printf("  %sbest id%s            %s%016llx%s\n", c_dim(), c_reset(), c_cyan(), (unsigned long long)candidate->id, c_reset());
+    printf("  %sbest quick%s         %lld\n", c_dim(), c_reset(), (long long)candidate->quick_score);
+    printf("  %sbest deep%s          %lld\n", c_dim(), c_reset(), (long long)candidate->deep_score);
+    printf("  %sbest flags%s         %s0x%x%s (", c_dim(), c_reset(), candidate->fail_flags ? c_yellow() : c_green(), candidate->fail_flags, c_reset());
+    print_fail_flags(stdout, candidate->fail_flags);
+    printf(")\n");
+    printf("  %soutput%s             %s\n", c_dim(), c_reset(), exported ? "out/best.c, out/best.txt, out/report.md, out/summary.txt" : "export failed");
+}
+
 static int command_self_test(void) {
-    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
-    if (!scratch) {
-        fprintf(stderr, "failed to allocate score scratch\n");
-        return 1;
-    }
-
-    Candidate bad;
-    Candidate good;
-    make_constant_bad(&bad);
-    make_reasonable_baseline(&good);
-
-    ScoreResult bad_score = score_candidate(&bad, scratch, 1234, 1);
-    ScoreResult good_score = score_candidate(&good, scratch, 1234, 1);
-    free(scratch);
-
-    printf("bad_constant score=%lld flags=0x%x\n", (long long)bad_score.score, bad_score.fail_flags);
-    printf("baseline_mixer score=%lld flags=0x%x\n", (long long)good_score.score, good_score.fail_flags);
-
-    if (bad_score.fail_flags == 0) {
-        fprintf(stderr, "self-test failed: bad hash did not fail\n");
-        return 1;
-    }
-    if (good_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_NO_HASH)) {
-        fprintf(stderr, "self-test failed: baseline mixer failed core flags=0x%x\n", good_score.fail_flags);
-        return 1;
-    }
-    if (good_score.score <= bad_score.score) {
-        fprintf(stderr, "self-test failed: baseline did not beat bad hash\n");
-        return 1;
-    }
-
+    if (!run_vm_self_tests()) return 1;
+    if (!run_calibration_self_tests()) return 1;
+    if (!run_generation_self_tests()) return 1;
     printf("self-test: pass\n");
     return 0;
 }
@@ -647,12 +1242,10 @@ static int command_self_test(void) {
 static int command_run(const RunOptions *options) {
     Candidate *population = (Candidate *)calloc(POPULATION_SIZE, sizeof(*population));
     Candidate *next = (Candidate *)calloc(POPULATION_SIZE, sizeof(*next));
-    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
-    if (!population || !next || !scratch) {
+    if (!population || !next) {
         fprintf(stderr, "failed to allocate run memory\n");
         free(population);
         free(next);
-        free(scratch);
         return 1;
     }
 
@@ -666,18 +1259,46 @@ static int command_run(const RunOptions *options) {
     memset(&best_seen, 0, sizeof(best_seen));
     best_seen.quick_score = INT64_MIN;
     best_seen.deep_score = INT64_MIN;
+    uint64_t quick_candidates_evaluated = 0;
+    uint64_t deep_candidates_evaluated = 0;
+    uint32_t score_threads = clamp_thread_count(options->threads, POPULATION_SIZE);
+    ScorePool score_pool;
+    double last_status_elapsed = -1.0;
+    if (!score_pool_init(&score_pool, score_threads, POPULATION_SIZE)) {
+        fprintf(stderr, "failed to start scoring worker pool\n");
+        free(population);
+        free(next);
+        return 1;
+    }
+    score_threads = score_pool.thread_count;
+    clock_t start_clock = clock();
 
-    while (!g_stop_requested && (options->generations == 0 || generation < options->generations)) {
+    print_run_header(options, score_threads);
+
+    while (!g_stop_requested &&
+           !generation_limit_reached(options, generation) &&
+           !seconds_limit_reached(options, start_clock)) {
         generation++;
-        score_population(population, scratch, options->seed, 0);
+        if (!score_pool_score(&score_pool, population, POPULATION_SIZE, options->seed, 0)) {
+            fprintf(stderr, "failed to score population with %u thread(s)\n", score_threads);
+            score_pool_destroy(&score_pool);
+            free(population);
+            free(next);
+            return 1;
+        }
+        quick_candidates_evaluated += POPULATION_SIZE;
         qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
 
-        if (generation % DEEP_EVERY == 0 || generation == 1 || generation == options->generations) {
-            for (uint32_t i = 0; i < DEEP_TOP_N; i++) {
-                ScoreResult deep = score_candidate(&population[i], scratch, options->seed, 1);
-                population[i].deep_score = deep.score;
-                population[i].fail_flags |= deep.fail_flags;
+        int deep_generation = generation % DEEP_EVERY == 0 || generation == 1 || generation_limit_reached(options, generation);
+        if (deep_generation) {
+            if (!score_pool_score(&score_pool, population, DEEP_TOP_N, options->seed, 1)) {
+                fprintf(stderr, "failed to deep-score candidates with %u thread(s)\n", score_threads);
+                score_pool_destroy(&score_pool);
+                free(population);
+                free(next);
+                return 1;
             }
+            deep_candidates_evaluated += DEEP_TOP_N;
             qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
         }
 
@@ -687,15 +1308,17 @@ static int command_run(const RunOptions *options) {
             best_seen = population[0];
         }
 
-        printf("gen=%llu best=%lld deep=%lld len=%u flags=0x%x id=%llx eval_hint=%u\n",
-               (unsigned long long)generation,
-               (long long)population[0].quick_score,
-               (long long)population[0].deep_score,
-               population[0].instruction_count,
-               population[0].fail_flags,
-               (unsigned long long)population[0].id,
-               population[0].speed_hint);
-        print_candidate_preview(&population[0]);
+        double now_elapsed = elapsed_seconds_since(start_clock);
+        if (generation == 1 ||
+            deep_generation ||
+            generation_limit_reached(options, generation) ||
+            seconds_limit_reached(options, start_clock) ||
+            last_status_elapsed < 0.0 ||
+            now_elapsed - last_status_elapsed >= 0.25) {
+            print_progress_line(options, generation, now_elapsed, &population[0],
+                                quick_candidates_evaluated, deep_candidates_evaluated);
+            last_status_elapsed = now_elapsed;
+        }
 
         for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
             next[i] = population[i];
@@ -712,22 +1335,168 @@ static int command_run(const RunOptions *options) {
         next = tmp;
     }
 
-    ScoreResult final_deep = score_candidate(&best_seen, scratch, options->seed, 1);
-    best_seen.deep_score = final_deep.score;
-    best_seen.fail_flags |= final_deep.fail_flags;
+    if (!score_pool_score(&score_pool, &best_seen, 1, options->seed, 1)) {
+        fprintf(stderr, "failed to score final best candidate\n");
+        score_pool_destroy(&score_pool);
+        free(population);
+        free(next);
+        return 1;
+    }
+    deep_candidates_evaluated += 1;
 
-    int exported = export_best(&best_seen, options->seed, generation);
-    printf("exported=%s out/best.c id=%llx quick=%lld deep=%lld flags=0x%x\n",
-           exported ? "yes" : "no",
-           (unsigned long long)best_seen.id,
-           (long long)best_seen.quick_score,
-           (long long)best_seen.deep_score,
-           best_seen.fail_flags);
+    double elapsed = elapsed_seconds_since(start_clock);
+    RunReport report = {
+        generation,
+        quick_candidates_evaluated,
+        deep_candidates_evaluated,
+        elapsed,
+        stop_reason_for(options, generation, elapsed),
+        score_threads
+    };
+
+    int exported = export_best(&best_seen, options, &report);
+    print_final_report(&best_seen, &report, exported);
 
     free(population);
     free(next);
-    free(scratch);
+    score_pool_destroy(&score_pool);
     return exported ? 0 : 1;
+}
+
+static int write_bench_report(const BenchOptions *options, const BenchResult *results, uint32_t result_count) {
+    ensure_out_dir();
+    FILE *md = fopen("out/bench.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/bench.md\n");
+        return 0;
+    }
+
+    fprintf(md, "# hash-forge benchmark report\n\n");
+    fprintf(md, "## Settings\n\n");
+    fprintf(md, "- Seed: `%llu`\n", (unsigned long long)options->seed);
+    fprintf(md, "- Seconds per thread option: `%llu`\n", (unsigned long long)options->seconds);
+    fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
+    fprintf(md, "- Deep sample size: `%u`\n\n", DEEP_TOP_N);
+
+    fprintf(md, "## Results\n\n");
+    fprintf(md, "| requested threads | actual threads | quick candidates | quick/sec | deep candidates | deep/sec |\n");
+    fprintf(md, "|---:|---:|---:|---:|---:|---:|\n");
+    for (uint32_t i = 0; i < result_count; i++) {
+        fprintf(md, "| %u | %u | %llu | %.0f | %llu | %.0f |\n",
+                results[i].requested_threads,
+                results[i].actual_threads,
+                (unsigned long long)results[i].quick_candidates,
+                results[i].quick_rate,
+                (unsigned long long)results[i].deep_candidates,
+                results[i].deep_rate);
+    }
+
+    if (result_count > 0) {
+        uint32_t best_quick = 0;
+        uint32_t best_deep = 0;
+        for (uint32_t i = 1; i < result_count; i++) {
+            if (results[i].quick_rate > results[best_quick].quick_rate) best_quick = i;
+            if (results[i].deep_rate > results[best_deep].deep_rate) best_deep = i;
+        }
+        fprintf(md, "\n## Interpretation\n\n");
+        fprintf(md, "- Best quick throughput: `%u` threads at `%.0f` candidates/sec.\n",
+                results[best_quick].actual_threads, results[best_quick].quick_rate);
+        fprintf(md, "- Best deep throughput: `%u` threads at `%.0f` candidates/sec.\n",
+                results[best_deep].actual_threads, results[best_deep].deep_rate);
+        fprintf(md, "- Benchmark rates are machine-local guidance, not a quality score.\n");
+    }
+
+    fclose(md);
+    return 1;
+}
+
+static int run_bench_phase(ScorePool *pool, Candidate *candidates, uint32_t candidate_count, uint64_t seed, int deep, double seconds, uint64_t *evaluated, double *elapsed) {
+    double start = wall_seconds_now();
+    double now = start;
+    *evaluated = 0;
+
+    do {
+        if (!score_pool_score(pool, candidates, candidate_count, seed, deep)) {
+            return 0;
+        }
+        *evaluated += candidate_count;
+        now = wall_seconds_now();
+    } while (now - start < seconds);
+
+    *elapsed = now - start;
+    if (*elapsed <= 0.0) *elapsed = 0.000001;
+    return 1;
+}
+
+static int command_bench(const BenchOptions *options) {
+    Candidate *population = (Candidate *)calloc(POPULATION_SIZE, sizeof(*population));
+    BenchResult results[MAX_BENCH_THREAD_OPTIONS];
+    if (!population) {
+        fprintf(stderr, "failed to allocate benchmark population\n");
+        return 1;
+    }
+
+    Rng rng = { options->seed };
+    for (uint32_t i = 0; i < POPULATION_SIZE; i++) {
+        random_candidate(&population[i], &rng);
+    }
+
+    double phase_seconds = (double)options->seconds / 2.0;
+    if (phase_seconds < 0.001) phase_seconds = 0.001;
+
+    printf("\n%s%sHash Forge benchmark%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %sseed%s         %llu\n", c_dim(), c_reset(), (unsigned long long)options->seed);
+    printf("  %sseconds%s      %llu total per thread option\n", c_dim(), c_reset(), (unsigned long long)options->seconds);
+    printf("  %spopulation%s   %u candidates\n", c_dim(), c_reset(), POPULATION_SIZE);
+    printf("\n%s%9s  %7s  %14s  %12s  %14s  %12s%s\n",
+           c_dim(), "requested", "actual", "quick evals", "quick/sec", "deep evals", "deep/sec", c_reset());
+
+    uint32_t result_count = 0;
+    for (uint32_t i = 0; i < options->thread_count; i++) {
+        uint32_t requested = options->threads[i];
+        ScorePool pool;
+        if (!score_pool_init(&pool, requested, POPULATION_SIZE)) {
+            fprintf(stderr, "failed to start scoring worker pool for %u thread(s)\n", requested);
+            free(population);
+            return 1;
+        }
+
+        BenchResult *result = &results[result_count++];
+        memset(result, 0, sizeof(*result));
+        result->requested_threads = requested;
+        result->actual_threads = pool.thread_count;
+
+        if (!run_bench_phase(&pool, population, POPULATION_SIZE, mix_seed(options->seed, requested, 1), 0,
+                             phase_seconds, &result->quick_candidates, &result->quick_seconds)) {
+            score_pool_destroy(&pool);
+            free(population);
+            return 1;
+        }
+        if (!run_bench_phase(&pool, population, DEEP_TOP_N, mix_seed(options->seed, requested, 2), 1,
+                             phase_seconds, &result->deep_candidates, &result->deep_seconds)) {
+            score_pool_destroy(&pool);
+            free(population);
+            return 1;
+        }
+        score_pool_destroy(&pool);
+
+        result->quick_rate = (double)result->quick_candidates / result->quick_seconds;
+        result->deep_rate = (double)result->deep_candidates / result->deep_seconds;
+        printf("%s%9u%s  %7u  %14llu  %s%12.0f%s  %14llu  %s%12.0f%s\n",
+               c_bold(), result->requested_threads, c_reset(),
+               result->actual_threads,
+               (unsigned long long)result->quick_candidates,
+               c_green(), result->quick_rate, c_reset(),
+               (unsigned long long)result->deep_candidates,
+               c_green(), result->deep_rate, c_reset());
+    }
+
+    int wrote = write_bench_report(options, results, result_count);
+    printf("\n%s%sBenchmark complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %soutput%s  %s\n", c_dim(), c_reset(), wrote ? "out/bench.md" : "export failed");
+
+    free(population);
+    return wrote ? 0 : 1;
 }
 
 static int parse_u64(const char *text, uint64_t *out) {
@@ -740,10 +1509,38 @@ static int parse_u64(const char *text, uint64_t *out) {
     return 1;
 }
 
+static int parse_thread_list(const char *text, BenchOptions *options) {
+    const char *at = text;
+    options->thread_count = 0;
+
+    while (*at) {
+        char *end = NULL;
+        unsigned long value = strtoul(at, &end, 0);
+        if (end == at || value == 0) {
+            return 0;
+        }
+        if (options->thread_count >= MAX_BENCH_THREAD_OPTIONS) {
+            fprintf(stderr, "too many --threads entries; max is %u\n", MAX_BENCH_THREAD_OPTIONS);
+            return 0;
+        }
+        options->threads[options->thread_count++] = clamp_thread_count(value, POPULATION_SIZE);
+        if (*end == '\0') {
+            return 1;
+        }
+        if (*end != ',') {
+            return 0;
+        }
+        at = end + 1;
+    }
+
+    return options->thread_count > 0;
+}
+
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n>]\n", program);
+    printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>]\n", program);
     printf("  %s export-best\n", program);
 }
 
@@ -761,6 +1558,20 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
                 fprintf(stderr, "invalid --generations value\n");
                 return 0;
             }
+        } else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->seconds) || options->seconds == 0) {
+                fprintf(stderr, "invalid --seconds value\n");
+                return 0;
+            }
+            options->have_seconds = 1;
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            uint64_t threads = 0;
+            if (!parse_u64(argv[++i], &threads) || threads == 0) {
+                fprintf(stderr, "invalid --threads value\n");
+                return 0;
+            }
+            options->threads = clamp_thread_count(threads, POPULATION_SIZE);
+            options->have_threads = 1;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;
@@ -769,6 +1580,51 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
     if (!options->have_seed) {
         fprintf(stderr, "run requires --seed <u64>\n");
         return 0;
+    }
+    if (!options->have_threads) {
+        options->threads = default_thread_count();
+    }
+    return 1;
+}
+
+static int parse_bench_options(int argc, char **argv, BenchOptions *options) {
+    memset(options, 0, sizeof(*options));
+    options->seed = 123;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->seed)) {
+                fprintf(stderr, "invalid --seed value\n");
+                return 0;
+            }
+            options->have_seed = 1;
+        } else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->seconds) || options->seconds == 0) {
+                fprintf(stderr, "invalid --seconds value\n");
+                return 0;
+            }
+            options->have_seconds = 1;
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            if (!parse_thread_list(argv[++i], options)) {
+                fprintf(stderr, "invalid --threads list\n");
+                return 0;
+            }
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    if (!options->have_seconds) {
+        fprintf(stderr, "bench requires --seconds <n>\n");
+        return 0;
+    }
+    if (options->thread_count == 0) {
+        uint32_t defaults[] = { 1, 2, 4, 8, 16, 32 };
+        for (uint32_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
+            uint32_t clamped = clamp_thread_count(defaults[i], POPULATION_SIZE);
+            if (options->thread_count == 0 || options->threads[options->thread_count - 1] != clamped) {
+                options->threads[options->thread_count++] = clamped;
+            }
+        }
     }
     return 1;
 }
@@ -785,6 +1641,8 @@ static int command_export_best(void) {
 }
 
 int main(int argc, char **argv) {
+    init_console_output();
+
     if (argc < 2) {
         print_usage(argv[0]);
         return 2;
@@ -800,6 +1658,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_run(&options);
+    }
+
+    if (strcmp(argv[1], "bench") == 0) {
+        BenchOptions options;
+        if (!parse_bench_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_bench(&options);
     }
 
     if (strcmp(argv[1], "export-best") == 0) {

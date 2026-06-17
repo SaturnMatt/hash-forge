@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path $root "src\hash_forge.c"
-$tableSrc = Join-Path $root "hash_table\hash_table.c"
+$tableSrc = Join-Path $root "hash_table\hash_table_tiny.c"
 $tableTestSrc = Join-Path $root "hash_table\test_hash_table.c"
 $arraySrc = Join-Path $root "dynamic_array\dynamic_array_tiny.c"
 $arrayTestSrc = Join-Path $root "dynamic_array\test_dynamic_array.c"
@@ -34,12 +34,14 @@ if (-not (Test-Path $devCmd)) {
 }
 
 if ($Config -eq "Release") {
-    $clFlags = "/nologo /TC /std:c11 /O2 /DNDEBUG"
+    $clFlags = "/nologo /TC /std:c11 /O2 /Ot /Oi /GL /Gw /Gy /DNDEBUG"
+    $linkFlags = "/link /LTCG /OPT:REF /OPT:ICF"
 } else {
     $clFlags = "/nologo /TC /std:c11 /Od /Zi /W4"
+    $linkFlags = ""
 }
 
-$cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags `"$src`" /Fe:`"$exe`""
+$cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags `"$src`" /Fe:`"$exe`" $linkFlags"
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
@@ -47,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ((Test-Path $tableSrc) -and (Test-Path $tableTestSrc)) {
     $include = Join-Path $root "hash_table"
-    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$tableSrc`" `"$tableTestSrc`" /Fe:`"$tableTestExe`""
+    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$tableSrc`" `"$tableTestSrc`" /Fe:`"$tableTestExe`" $linkFlags"
     cmd.exe /c $cmd
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
@@ -57,7 +59,7 @@ if ((Test-Path $tableSrc) -and (Test-Path $tableTestSrc)) {
 
 if ((Test-Path $arraySrc) -and (Test-Path $arrayTestSrc)) {
     $include = Join-Path $root "dynamic_array"
-    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$arraySrc`" `"$arrayTestSrc`" /Fe:`"$arrayTestExe`""
+    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$arraySrc`" `"$arrayTestSrc`" /Fe:`"$arrayTestExe`" $linkFlags"
     cmd.exe /c $cmd
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE

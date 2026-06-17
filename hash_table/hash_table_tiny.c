@@ -1,0 +1,11 @@
+#include "hash_table.h"
+#include <stdlib.h>
+#include <string.h>
+#define U ((size_t)-1)
+#define E 0
+#define F 1
+#define D 2
+static uint64_t H(uint64_t x){x^=x>>30;x*=UINT64_C(0xbf58476d1ce4e5b9);x^=x>>27;x*=UINT64_C(0x94d049bb133111eb);return x^(x>>31);}static size_t P(size_t n){size_t c=16;for(;c<n;c*=2)if(c>U/2)return 0;return c;}static void I(hf_table_entry*e,size_t c,uint64_t k,uint64_t v){size_t i=(size_t)H(k)&(c-1);for(;;i=(i+1)&(c-1))if(e[i].state!=F){e[i].key=k;e[i].value=v;e[i].state=F;return;}}static int R(hf_table*t,size_t n){size_t c=P(n);hf_table_entry*e;if(!c||!(e=calloc(c,sizeof*e)))return 0;for(size_t i=0;i<t->capacity;i++)if(t->entries[i].state==F)I(e,c,t->entries[i].key,t->entries[i].value);free(t->entries);t->entries=e;t->capacity=c;t->tombstones=0;return 1;}
+int hf_table_init(hf_table*t,size_t c){return t?(t->entries=0,t->capacity=t->count=t->tombstones=0,R(t,c)):0;}void hf_table_destroy(hf_table*t){if(t)free(t->entries),t->entries=0,t->capacity=t->count=t->tombstones=0;}void hf_table_clear(hf_table*t){if(t&&t->entries)memset(t->entries,0,t->capacity*sizeof*t->entries),t->count=t->tombstones=0;}static int A(hf_table*t){return t->capacity?((t->count+t->tombstones+1)*10>=t->capacity*7?R(t,(t->count+1)*10>=t->capacity*7?t->capacity*2:t->capacity):1):R(t,16);}
+int hf_table_put(hf_table*t,uint64_t k,uint64_t v){size_t d=U,i;if(!t||!A(t))return 0;for(i=(size_t)H(k)&(t->capacity-1);;i=(i+1)&(t->capacity-1)){hf_table_entry*e=t->entries+i;if(e->state==E){if(d!=U)e=t->entries+d,t->tombstones--;e->key=k;e->value=v;e->state=F;t->count++;return 1;}if(e->state==D){if(d==U)d=i;}else if(e->key==k)return e->value=v,1;}}
+int hf_table_get(const hf_table*t,uint64_t k,uint64_t*v){if(!t||!t->entries||!t->capacity)return 0;for(size_t i=(size_t)H(k)&(t->capacity-1);;i=(i+1)&(t->capacity-1)){const hf_table_entry*e=t->entries+i;if(e->state==E)return 0;if(e->state==F&&e->key==k)return v?*v=e->value:0,1;}}int hf_table_remove(hf_table*t,uint64_t k){if(!t||!t->entries||!t->capacity)return 0;for(size_t i=(size_t)H(k)&(t->capacity-1);;i=(i+1)&(t->capacity-1)){hf_table_entry*e=t->entries+i;if(e->state==E)return 0;if(e->state==F&&e->key==k)return e->state=D,t->count--,t->tombstones++,1;}}size_t hf_table_count(const hf_table*t){return t?t->count:0;}size_t hf_table_capacity(const hf_table*t){return t?t->capacity:0;}

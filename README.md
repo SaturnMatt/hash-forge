@@ -50,25 +50,53 @@ build\hash-forge.exe
 ```powershell
 .\build\hash-forge.exe self-test
 .\build\hash-forge.exe run --seed 123 --generations 100
+.\build\hash-forge.exe run --seed 123 --seconds 60
+.\build\hash-forge.exe run --seed 123 --seconds 60 --threads 8
+.\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32
 .\build\hash-forge.exe export-best
 ```
 
 `run` keeps the population, scoring state, and candidate programs in memory
-during evolution. On completion it writes:
+during evolution. Scoring is split across worker threads by default, using the
+machine's processor count capped at 32. Use `--threads <n>` to pin a run to a
+specific worker count. Worker threads and per-thread scratch buffers are created
+once at run start and reused for the whole run. On completion it writes:
 
 ```txt
 out\best.c
 out\best.txt
+out\report.md
 out\summary.txt
+out\bench.md
 ```
 
 `out\best.c` is standalone C containing the exported winner.
+`out\report.md` is the full human-readable run report, including run settings,
+stop reason, scores, decoded fail flags, and the best candidate instruction
+listing. It also records quick, deep, and total candidate hash functions
+evaluated during the run.
 
-## Smoke Test
+`bench` measures quick and deep candidate scoring throughput for one or more
+thread counts and writes `out\bench.md`. Benchmark rates are machine-local
+guidance for choosing thread counts, not hash quality scores.
+
+## Tests
 
 ```powershell
+.\scripts\test.ps1
 .\scripts\smoke.ps1
 ```
 
-The smoke test builds the project, runs self-test, runs the hash-table tests,
-and performs a deterministic 100-generation evolution run.
+`test.ps1` is the strict verification path. It builds the project, runs the
+expanded `self-test`, runs support-module tests, checks CLI error handling,
+compares deterministic 100-generation runs across `--threads 1` and
+`--threads 4`, stress-checks worker counts including the default and over-cap
+values, verifies `out/report.md` and `out/summary.txt`, checks time-limited run
+contracts, verifies `bench` plus `out/bench.md`, and compiles `out/best.c`
+independently.
+
+`smoke.ps1` is a compatibility entry point that runs the same strict suite.
+
+`hash-forge self-test` includes VM instruction checks, score calibration for
+constant/key-only/seed-only/xor-only bad hashes, a baseline mixer comparison,
+and generator/mutation invariants.
