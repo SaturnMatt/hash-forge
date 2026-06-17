@@ -283,6 +283,12 @@ Score output XOR popcount near 50% and check that low bits of the output
 difference do not collapse into a tiny number of buckets. Penalize zero
 differences heavily.
 
+### Input Sensitivity
+
+Probe whether changing only `key`, only `seed`, or both usually changes the
+output. Penalize zero differences heavily so candidates that ignore one input
+are rejected directly instead of only through indirect collision signals.
+
 ### Speed Telemetry
 
 Run a tight loop over candidate evaluation and time it. Use speed as telemetry
@@ -423,7 +429,7 @@ Acceptance criteria:
 - VM instruction behavior for MOV, ADD, MUL, XOR, shifts, and rotates.
 - Score calibration for constant, key-only, seed-only, xor-only, and baseline
   mixer candidates, including the compact starter and neighboring-input
-  differential signal.
+  differential and key/seed sensitivity signals.
 - Generator and mutation invariants: instruction bounds, valid opcodes and
   registers, hash writes, stable ids, and deterministic seeded behavior.
 

@@ -108,6 +108,7 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Fail flags") "report missing fail flags"
     Assert ($report -match "Score breakdown") "report missing score breakdown"
     Assert ($report -match "\| differentials \|") "report missing differential breakdown row"
+    Assert ($report -match "\| sensitivity \|") "report missing sensitivity breakdown row"
     Assert ($report -match "\| total \|") "report missing score breakdown total row"
     Assert ($report -match "Final multi-seed audit") "report missing final multi-seed audit"
     Assert ($report -match "Worst audit deep score") "report missing audit worst score"
@@ -229,8 +230,8 @@ Set-Location $root
 
 $selfTest = Invoke-Captured $exe @("self-test")
 Assert ($selfTest.Output -match "compact_starter score=.*flags=0x") "self-test missing compact starter calibration"
-Assert ($selfTest.Output -match "bad_key_only score=.*flags=0x2f") "self-test no longer flags bad_key_only differential failure"
-Assert ($selfTest.Output -match "bad_seed_only score=.*flags=0x2f") "self-test no longer flags bad_seed_only differential failure"
+Assert ($selfTest.Output -match "bad_key_only score=.*flags=0x6f") "self-test no longer flags bad_key_only sensitivity failure"
+Assert ($selfTest.Output -match "bad_seed_only score=.*flags=0x6f") "self-test no longer flags bad_seed_only sensitivity failure"
 Assert ($selfTest.Output -match "bad_xor_only score=.*flags=0x2b") "self-test no longer flags bad_xor_only differential failure"
 Invoke-Captured $tableTests @() | Out-Null
 Invoke-Captured $arrayTests @() | Out-Null

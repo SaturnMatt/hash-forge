@@ -42,6 +42,7 @@
 #define FAIL_AVALANCHE  0x08u
 #define FAIL_NO_HASH    0x10u
 #define FAIL_DIFFERENTIAL 0x20u
+#define FAIL_SENSITIVITY 0x40u
 
 typedef enum OpCode {
     OP_MOV,
@@ -105,6 +106,7 @@ typedef struct ScoreResult {
     int64_t bucket_score;
     int64_t avalanche_score;
     int64_t differential_score;
+    int64_t sensitivity_score;
     int64_t size_penalty;
     uint32_t fail_flags;
     uint32_t eval_count;
@@ -423,6 +425,7 @@ static uint32_t fail_severity(uint32_t flags) {
     if (flags & FAIL_ZERO) severity += 500;
     if (flags & FAIL_BUCKET) severity += 200;
     if (flags & FAIL_DIFFERENTIAL) severity += 150;
+    if (flags & FAIL_SENSITIVITY) severity += 125;
     if (flags & FAIL_AVALANCHE) severity += 100;
     if (flags & FAIL_COLLISION) severity += 50;
     return severity;
@@ -800,6 +803,42 @@ static int64_t score_differentials(const Candidate *candidate, ScoreScratch *scr
     return score - (int64_t)zero_diffs * 5000;
 }
 
+static int64_t score_input_sensitivity(const Candidate *candidate, uint64_t seed, int iterations, uint32_t *flags, uint32_t *evals) {
+    Rng rng = { seed };
+    int key_zero = 0;
+    int seed_zero = 0;
+    int both_zero = 0;
+    int64_t score = 0;
+
+    for (int i = 0; i < iterations; i++) {
+        uint64_t key = splitmix64_next(&rng) + (uint64_t)i;
+        uint64_t s = splitmix64_next(&rng) + ((uint64_t)i << 32);
+        uint64_t h = eval_candidate(candidate, key, s);
+        uint64_t key_diff = h ^ eval_candidate(candidate, key ^ 0x9e3779b97f4a7c15ull, s);
+        uint64_t seed_diff = h ^ eval_candidate(candidate, key, s ^ 0xbf58476d1ce4e5b9ull);
+        uint64_t both_diff = h ^ eval_candidate(candidate, key ^ 0xd1b54a32d192ed03ull, s ^ 0x94d049bb133111ebull);
+        if (key_diff == 0) key_zero++;
+        if (seed_diff == 0) seed_zero++;
+        if (both_diff == 0) both_zero++;
+        int key_pop = popcount64(key_diff);
+        int seed_pop = popcount64(seed_diff);
+        int both_pop = popcount64(both_diff);
+        int key_abs = key_pop - 32;
+        int seed_abs = seed_pop - 32;
+        int both_abs = both_pop - 32;
+        if (key_abs < 0) key_abs = -key_abs;
+        if (seed_abs < 0) seed_abs = -seed_abs;
+        if (both_abs < 0) both_abs = -both_abs;
+        score += 260 - (int64_t)(key_abs + seed_abs + both_abs) * 12;
+    }
+
+    *evals += (uint32_t)(iterations * 4);
+    if (key_zero > 0 || seed_zero > 0 || both_zero > 0) {
+        *flags |= FAIL_SENSITIVITY;
+    }
+    return score - (int64_t)(key_zero + seed_zero + both_zero) * 8000;
+}
+
 static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
     const int iterations = score_iterations_for_quality(quality, deep);
     ScoreResult result;
@@ -815,12 +854,14 @@ static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scr
     result.bucket_score = score_buckets(candidate, scratch, mix_seed(run_seed, candidate->id, 22), deep ? iterations * 2 : iterations, deep, &result.fail_flags, &result.eval_count);
     result.avalanche_score = score_avalanche(candidate, scratch, mix_seed(run_seed, candidate->id, 33), iterations, deep, &result.fail_flags, &result.eval_count);
     result.differential_score = score_differentials(candidate, scratch, mix_seed(run_seed, candidate->id, 44), iterations, deep, &result.fail_flags, &result.eval_count);
+    result.sensitivity_score = score_input_sensitivity(candidate, mix_seed(run_seed, candidate->id, 55), iterations, &result.fail_flags, &result.eval_count);
     result.size_penalty = -((int64_t)candidate->instruction_count * 20);
     result.score += result.zero_score;
     result.score += result.collision_score;
     result.score += result.bucket_score;
     result.score += result.avalanche_score;
     result.score += result.differential_score;
+    result.score += result.sensitivity_score;
     result.score += result.size_penalty;
     return result;
 }
@@ -922,6 +963,7 @@ static void print_fail_flags(FILE *out, uint32_t flags) {
     if (flags & FAIL_AVALANCHE) { fprintf(out, "%sAVALANCHE", wrote ? ", " : ""); wrote = 1; }
     if (flags & FAIL_NO_HASH) { fprintf(out, "%sNO_HASH", wrote ? ", " : ""); wrote = 1; }
     if (flags & FAIL_DIFFERENTIAL) { fprintf(out, "%sDIFFERENTIAL", wrote ? ", " : ""); wrote = 1; }
+    if (flags & FAIL_SENSITIVITY) { fprintf(out, "%sSENSITIVITY", wrote ? ", " : ""); wrote = 1; }
 }
 
 static void make_reasonable_baseline(Candidate *candidate);
@@ -1016,6 +1058,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
         fprintf(md, "| buckets | %lld | %lld |\n", (long long)quick.bucket_score, (long long)deep.bucket_score);
         fprintf(md, "| avalanche | %lld | %lld |\n", (long long)quick.avalanche_score, (long long)deep.avalanche_score);
         fprintf(md, "| differentials | %lld | %lld |\n", (long long)quick.differential_score, (long long)deep.differential_score);
+        fprintf(md, "| sensitivity | %lld | %lld |\n", (long long)quick.sensitivity_score, (long long)deep.sensitivity_score);
         fprintf(md, "| size penalty | %lld | %lld |\n", (long long)quick.size_penalty, (long long)deep.size_penalty);
         fprintf(md, "| total | %lld | %lld |\n\n", (long long)quick.score, (long long)deep.score);
         free(breakdown_scratch);
@@ -1555,22 +1598,22 @@ static int run_calibration_self_tests(void) {
         free(scratch);
         return 0;
     }
-    if (!self_check((starter_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_NO_HASH)) == 0,
+    if (!self_check((starter_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_SENSITIVITY | FAIL_NO_HASH)) == 0,
                     "compact starter core flags")) {
         free(scratch);
         return 0;
     }
 
-    if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_NO_HASH)) == 0,
+    if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_SENSITIVITY | FAIL_NO_HASH)) == 0,
                     "baseline mixer core flags")) {
         free(scratch);
         return 0;
     }
 
     CalibrationCase cases[] = {
-        { "bad_constant", make_constant_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL },
-        { "bad_key_only", make_key_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL },
-        { "bad_seed_only", make_seed_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL },
+        { "bad_constant", make_constant_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL | FAIL_SENSITIVITY },
+        { "bad_key_only", make_key_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL | FAIL_SENSITIVITY },
+        { "bad_seed_only", make_seed_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL | FAIL_SENSITIVITY },
         { "bad_xor_only", make_xor_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL }
     };
 

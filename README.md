@@ -106,7 +106,7 @@ export time.
 `out\report.md` is the full human-readable run report, including run settings,
 stop reason, scores, decoded fail flags, and the best candidate instruction
 listing. Scoring signals include trivial-output, collision, bucket,
-avalanche, and neighboring-input differential checks. The report also records
+avalanche, neighboring-input differential, and key/seed sensitivity checks. The report also records
 the best candidate score breakdown, final multi-seed audit, operator histogram,
 baseline comparison scores, plus quick, deep, and total candidate hash functions
 evaluated during the run. It also records diversity telemetry for the final
