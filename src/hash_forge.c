@@ -189,10 +189,6 @@ static void init_console_output(void) {
 #endif
 }
 
-static double elapsed_seconds_since(clock_t start_clock) {
-    return (double)(clock() - start_clock) / (double)CLOCKS_PER_SEC;
-}
-
 static double wall_seconds_now(void) {
 #ifdef _WIN32
     static LARGE_INTEGER frequency;
@@ -207,6 +203,10 @@ static double wall_seconds_now(void) {
 #else
     return (double)clock() / (double)CLOCKS_PER_SEC;
 #endif
+}
+
+static double elapsed_wall_seconds_since(double start_seconds) {
+    return wall_seconds_now() - start_seconds;
 }
 
 static uint64_t splitmix64_next(Rng *rng) {
@@ -1489,8 +1489,8 @@ static int generation_limit_reached(const RunOptions *options, uint64_t generati
     return options->generations != 0 && generation >= options->generations;
 }
 
-static int seconds_limit_reached(const RunOptions *options, clock_t start_clock) {
-    return options->have_seconds && elapsed_seconds_since(start_clock) >= (double)options->seconds;
+static int seconds_limit_reached(const RunOptions *options, double start_seconds) {
+    return options->have_seconds && elapsed_wall_seconds_since(start_seconds) >= (double)options->seconds;
 }
 
 static const char *stop_reason_for(const RunOptions *options, uint64_t generation, double elapsed_seconds) {
@@ -1679,13 +1679,13 @@ static int command_run(const RunOptions *options) {
         return 1;
     }
     score_threads = score_pool.thread_count;
-    clock_t start_clock = clock();
+    double start_seconds = wall_seconds_now();
 
     print_run_header(options, score_threads);
 
     while (!g_stop_requested &&
            !generation_limit_reached(options, generation) &&
-           !seconds_limit_reached(options, start_clock)) {
+           !seconds_limit_reached(options, start_seconds)) {
         generation++;
         if (!score_pool_score(&score_pool, population, POPULATION_SIZE, options->seed, 0, options->quality)) {
             fprintf(stderr, "failed to score population with %u thread(s)\n", score_threads);
@@ -1716,11 +1716,11 @@ static int command_run(const RunOptions *options) {
             best_seen = population[0];
         }
 
-        double now_elapsed = elapsed_seconds_since(start_clock);
+        double now_elapsed = elapsed_wall_seconds_since(start_seconds);
         if (generation == 1 ||
             deep_generation ||
             generation_limit_reached(options, generation) ||
-            seconds_limit_reached(options, start_clock) ||
+            seconds_limit_reached(options, start_seconds) ||
             last_status_elapsed < 0.0 ||
             now_elapsed - last_status_elapsed >= 0.25) {
             print_progress_line(options, generation, now_elapsed, &population[0],
@@ -1766,7 +1766,7 @@ static int command_run(const RunOptions *options) {
     }
     deep_candidates_evaluated += 1;
 
-    double elapsed = elapsed_seconds_since(start_clock);
+    double elapsed = elapsed_wall_seconds_since(start_seconds);
     RunReport report = {
         generation,
         quick_candidates_evaluated,
