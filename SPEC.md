@@ -160,6 +160,7 @@ Default parameters:
 population_size: 256
 survivor_count: 32
 mutations_per_child: 1..3
+crossover_children_per_generation: 16
 random_immigrants_per_generation: 8
 instruction_count: 8..16
 status_interval_ms: 1000
@@ -174,10 +175,11 @@ Loop:
 3. Sort/rank by quick score, fail flags, instruction count, and speed.
 4. Keep the top survivors.
 5. Fill the rest of the population with mutated children of survivors.
-6. Reserve a small tail for fresh random immigrants.
-7. Periodically deep-score current leaders.
-8. Print compact live status.
-9. Continue until stopped or until an optional generation limit is reached.
+6. Reserve a small lane for crossover children from survivor pairs.
+7. Reserve a small tail for fresh random immigrants.
+8. Periodically deep-score current leaders.
+9. Print compact live status.
+10. Continue until stopped or until an optional generation limit is reached.
 
 Mutation actions:
 

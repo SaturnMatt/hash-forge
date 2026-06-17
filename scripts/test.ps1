@@ -81,6 +81,7 @@ function Assert-ReportContains($summary) {
     $report = Get-Content $reportPath -Raw
     Assert ($report -match [regex]::Escape("- Stop reason: ``$($summary.StopReason)``")) "report missing stop reason"
     Assert ($report -match [regex]::Escape("- Scoring threads: ``$($summary.Threads)``")) "report missing thread count"
+    Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
     Assert ($report -match [regex]::Escape("- Total hash functions evaluated: ``$($summary.TotalCandidates)``")) "report missing total evaluated"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)

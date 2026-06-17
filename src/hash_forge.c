@@ -23,6 +23,7 @@
 #define MAX_PROGRAM_LEN 16
 #define POPULATION_SIZE 256
 #define SURVIVOR_COUNT 32
+#define CROSSOVER_COUNT 16
 #define IMMIGRANT_COUNT 8
 #define DEEP_EVERY 25
 #define DEEP_TOP_N 8
@@ -378,6 +379,35 @@ static void mutate_candidate(Candidate *child, const Candidate *parent, Rng *rng
     child->id = candidate_id(child);
 }
 
+static void crossover_candidate(Candidate *child, const Candidate *a, const Candidate *b, Rng *rng) {
+    memset(child, 0, sizeof(*child));
+    uint32_t prefix = 1 + rng_range(rng, a->instruction_count);
+    if (prefix > MAX_PROGRAM_LEN) prefix = MAX_PROGRAM_LEN;
+
+    for (uint32_t i = 0; i < prefix; i++) {
+        child->instructions[i] = a->instructions[i];
+    }
+    child->instruction_count = prefix;
+
+    uint32_t suffix_start = rng_range(rng, b->instruction_count);
+    for (uint32_t i = suffix_start; i < b->instruction_count && child->instruction_count < MAX_PROGRAM_LEN; i++) {
+        child->instructions[child->instruction_count++] = b->instructions[i];
+    }
+    while (child->instruction_count < MIN_PROGRAM_LEN) {
+        random_instruction(&child->instructions[child->instruction_count++], rng, rng_range(rng, 3) == 0);
+    }
+
+    if (!writes_hash(child)) {
+        child->instructions[rng_range(rng, child->instruction_count)].dst = 2;
+    }
+    child->parent_id = a->id ^ rotl64(b->id, 17);
+    child->generation = (a->generation > b->generation ? a->generation : b->generation) + 1;
+    child->quick_score = 0;
+    child->deep_score = INT64_MIN;
+    child->fail_flags = 0;
+    child->id = candidate_id(child);
+}
+
 static int collision_add(ScoreScratch *scratch, uint64_t h) {
     uint32_t mask = COLLISION_TABLE_SIZE - 1u;
     uint32_t at = (uint32_t)(h ^ (h >> 32)) & mask;
@@ -643,6 +673,7 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
+    fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
     fprintf(md, "- Deep score cadence: every `%u` generations\n", DEEP_EVERY);
@@ -982,6 +1013,19 @@ static int run_generation_self_tests(void) {
         if (!self_check(child_a.id == child_b.id && child_a.instruction_count == child_b.instruction_count &&
                         memcmp(child_a.instructions, child_b.instructions, child_a.instruction_count * sizeof(child_a.instructions[0])) == 0,
                         "mutated candidate determinism")) return 0;
+
+        Rng ca_rng = { 0x0f0e0d0c0b0a0908ull + i };
+        Rng cb_rng = { 0x0f0e0d0c0b0a0908ull + i };
+        Candidate cross_a;
+        Candidate cross_b;
+        crossover_candidate(&cross_a, &a, &b, &ca_rng);
+        crossover_candidate(&cross_b, &a, &b, &cb_rng);
+        if (!self_check(candidate_is_valid(&cross_a), "crossover candidate validity")) return 0;
+        if (!self_check(cross_a.generation == ((a.generation > b.generation ? a.generation : b.generation) + 1),
+                        "crossover candidate generation")) return 0;
+        if (!self_check(cross_a.id == cross_b.id && cross_a.instruction_count == cross_b.instruction_count &&
+                        memcmp(cross_a.instructions, cross_b.instructions, cross_a.instruction_count * sizeof(cross_a.instructions[0])) == 0,
+                        "crossover candidate determinism")) return 0;
     }
 
     printf("generation tests: pass\n");
@@ -1165,8 +1209,8 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
     printf("  %sthreads%s      %u scoring worker%s%s\n",
            c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s",
            options->auto_threads ? " (auto)" : "");
-    printf("  %spopulation%s   %u candidates, %u survivors, %u immigrants\n",
-           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, IMMIGRANT_COUNT);
+    printf("  %spopulation%s   %u candidates, %u survivors, %u crossover, %u immigrants\n",
+           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, CROSSOVER_COUNT, IMMIGRANT_COUNT);
     printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
            c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
 }
@@ -1378,11 +1422,18 @@ static int command_run(const RunOptions *options) {
         }
         uint32_t immigrant_start = POPULATION_SIZE > IMMIGRANT_COUNT ? POPULATION_SIZE - IMMIGRANT_COUNT : SURVIVOR_COUNT;
         if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
-        for (uint32_t i = SURVIVOR_COUNT; i < immigrant_start; i++) {
+        uint32_t crossover_start = immigrant_start > CROSSOVER_COUNT ? immigrant_start - CROSSOVER_COUNT : SURVIVOR_COUNT;
+        if (crossover_start < SURVIVOR_COUNT) crossover_start = SURVIVOR_COUNT;
+        for (uint32_t i = SURVIVOR_COUNT; i < crossover_start; i++) {
             uint32_t r = rng_range(&rng, SURVIVOR_COUNT * SURVIVOR_COUNT);
             uint32_t parent_index = r / SURVIVOR_COUNT;
             if (parent_index >= SURVIVOR_COUNT) parent_index = SURVIVOR_COUNT - 1;
             mutate_candidate(&next[i], &population[parent_index], &rng);
+        }
+        for (uint32_t i = crossover_start; i < immigrant_start; i++) {
+            uint32_t a = rng_range(&rng, SURVIVOR_COUNT);
+            uint32_t b = rng_range(&rng, SURVIVOR_COUNT);
+            crossover_candidate(&next[i], &population[a], &population[b], &rng);
         }
         for (uint32_t i = immigrant_start; i < POPULATION_SIZE; i++) {
             random_candidate(&next[i], &rng);

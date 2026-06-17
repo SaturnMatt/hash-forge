@@ -62,8 +62,9 @@ during evolution. Scoring is split across worker threads by default, using the
 machine's processor count capped at 32. Use `--threads <n>` to pin a run to a
 specific worker count. Worker threads and per-thread scratch buffers are created
 once at run start and reused for the whole run. Each generation keeps the top
-survivors, mutates most of the remaining population, and injects a small lane of
-fresh random immigrants to preserve diversity. On completion it writes:
+survivors, mutates most of the remaining population, recombines a small
+crossover lane from survivor pairs, and injects fresh random immigrants to
+preserve diversity. On completion it writes:
 Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
 
