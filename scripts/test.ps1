@@ -7,6 +7,7 @@ $arrayTests = Join-Path $root "build\dynamic_array_tests.exe"
 $summaryPath = Join-Path $root "out\summary.txt"
 $reportPath = Join-Path $root "out\report.md"
 $benchPath = Join-Path $root "out\bench.md"
+$historyMdPath = Join-Path $root "out\history.md"
 $bestCPath = Join-Path $root "out\best.c"
 $latestReportPath = Join-Path $root "out\latest_report_path.txt"
 $latestExportPath = Join-Path $root "out\latest_export_path.txt"
@@ -168,6 +169,15 @@ function Assert-BenchReport([string[]]$expectedThreadTexts) {
     }
 }
 
+function Assert-HistoryReport {
+    Assert (Test-Path $historyMdPath) "missing out\history.md"
+    $historyReport = Get-Content $historyMdPath -Raw
+    Assert ($historyReport -match "hash-forge history") "history report missing title"
+    Assert ($historyReport -match "Top rows shown") "history report missing top count"
+    Assert ($historyReport -match "best id") "history report missing best id column"
+    Assert ($historyReport -match "deep") "history report missing deep score column"
+}
+
 $lockRoot = Join-Path $root "build"
 New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
 $lockDir = Join-Path $lockRoot "test.lock"
@@ -244,6 +254,13 @@ Assert ($benchResult.Output -match "quality") "bench output missing quality"
 Assert ($benchResult.Output -match "quick/sec") "bench output missing quick/sec"
 Assert ($benchResult.Output -match "deep/sec") "bench output missing deep/sec"
 Assert-BenchReport @("| 1 | 1 |", "| 2 | 2 |", "| 32 | 32 |")
+
+$badHistory = Invoke-Captured $exe @("history", "--top", "0") @(2)
+Assert ($badHistory.Output -match "invalid --top") "bad-history-top error text changed"
+$historyResult = Invoke-Captured $exe @("history", "--top", "3")
+Assert ($historyResult.Output -match "Hash Forge history top runs") "history output missing title"
+Assert ($historyResult.Output -match "History complete") "history output missing completion"
+Assert-HistoryReport
 
 Compile-BestC
 

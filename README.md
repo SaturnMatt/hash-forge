@@ -55,6 +55,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
+.\build\hash-forge.exe history --top 10
 .\build\hash-forge.exe export-best
 ```
 
@@ -84,6 +85,7 @@ out\runs\*.c
 out\latest_report_path.txt
 out\latest_export_path.txt
 out\history.csv
+out\history.md
 out\summary.txt
 out\bench.md
 ```
@@ -103,6 +105,9 @@ evaluated during the run.
 `out\latest_export_path.txt` points to the latest archived export.
 `out\history.csv` is a compact append-only index of completed runs for quick
 comparison across seeds, qualities, thread counts, scores, and candidate ids.
+`history --top <n>` reads that index, ranks the strongest historical runs by
+failure severity and score, prints a compact leaderboard, and writes
+`out\history.md`.
 
 `bench` measures quick and deep candidate scoring throughput for one or more
 thread counts and quality modes, then writes `out\bench.md`. Benchmark rates
@@ -121,7 +126,8 @@ compares deterministic 100-generation runs across `--threads 1` and
 `--threads 4`, stress-checks worker counts including the default and over-cap
 values, verifies `--threads auto`, verifies `out/report.md` and
 `out/summary.txt`, checks quality modes, checks time-limited run contracts,
-verifies `bench` plus `out/bench.md`, and compiles `out/best.c` independently.
+verifies `bench` plus `out/bench.md`, verifies history leaderboard output, and
+compiles `out/best.c` independently.
 
 `smoke.ps1` is a compatibility entry point that runs the same strict suite.
 

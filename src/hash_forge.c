@@ -30,6 +30,7 @@
 #define COLLISION_TABLE_SIZE 65536u
 #define MAX_SCORE_THREADS 32
 #define MAX_BENCH_THREAD_OPTIONS 16
+#define MAX_HISTORY_ROWS 4096
 
 #define FAIL_ZERO       0x01u
 #define FAIL_COLLISION  0x02u
@@ -139,6 +140,27 @@ typedef struct BenchResult {
     double quick_rate;
     double deep_rate;
 } BenchResult;
+
+typedef struct HistoryOptions {
+    uint32_t top;
+} HistoryOptions;
+
+typedef struct HistoryRow {
+    long long unix_time;
+    uint64_t seed;
+    uint64_t run_generation;
+    double elapsed_seconds;
+    char stop_reason[64];
+    char quality[16];
+    uint32_t threads;
+    uint64_t best_id;
+    uint32_t candidate_generation;
+    uint32_t instruction_count;
+    int64_t quick_score;
+    int64_t deep_score;
+    uint32_t flags;
+    uint64_t total_candidates;
+} HistoryRow;
 
 typedef struct ScoreTask {
     Candidate *candidates;
@@ -2007,6 +2029,166 @@ static int command_bench(const BenchOptions *options) {
     return wrote ? 0 : 1;
 }
 
+static int parse_history_row(const char *line, HistoryRow *row) {
+    unsigned threads = 0;
+    unsigned candidate_generation = 0;
+    unsigned instruction_count = 0;
+    unsigned flags = 0;
+    unsigned long long seed = 0;
+    unsigned long long run_generation = 0;
+    unsigned long long best_id = 0;
+    unsigned long long total_candidates = 0;
+    long long quick_score = 0;
+    long long deep_score = 0;
+
+    int parsed = sscanf(line,
+                        "%lld,%llu,%llu,%lf,%63[^,],%15[^,],%u,%llx,%u,%u,%lld,%lld,0x%x,%llu",
+                        &row->unix_time,
+                        &seed,
+                        &run_generation,
+                        &row->elapsed_seconds,
+                        row->stop_reason,
+                        row->quality,
+                        &threads,
+                        &best_id,
+                        &candidate_generation,
+                        &instruction_count,
+                        &quick_score,
+                        &deep_score,
+                        &flags,
+                        &total_candidates);
+    if (parsed != 14) return 0;
+
+    row->seed = (uint64_t)seed;
+    row->run_generation = (uint64_t)run_generation;
+    row->threads = (uint32_t)threads;
+    row->best_id = (uint64_t)best_id;
+    row->candidate_generation = (uint32_t)candidate_generation;
+    row->instruction_count = (uint32_t)instruction_count;
+    row->quick_score = (int64_t)quick_score;
+    row->deep_score = (int64_t)deep_score;
+    row->flags = (uint32_t)flags;
+    row->total_candidates = (uint64_t)total_candidates;
+    return 1;
+}
+
+static int compare_history_rows(const void *a_ptr, const void *b_ptr) {
+    const HistoryRow *a = (const HistoryRow *)a_ptr;
+    const HistoryRow *b = (const HistoryRow *)b_ptr;
+    uint32_t a_severity = fail_severity(a->flags);
+    uint32_t b_severity = fail_severity(b->flags);
+    if (a_severity != b_severity) return a_severity < b_severity ? -1 : 1;
+    if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score ? -1 : 1;
+    if (a->quick_score != b->quick_score) return a->quick_score > b->quick_score ? -1 : 1;
+    if (a->total_candidates != b->total_candidates) return a->total_candidates > b->total_candidates ? -1 : 1;
+    if (a->unix_time != b->unix_time) return a->unix_time > b->unix_time ? -1 : 1;
+    return 0;
+}
+
+static void print_history_row(FILE *out, uint32_t rank, const HistoryRow *row, int markdown) {
+    if (markdown) {
+        fprintf(out, "| %u | %s | %u | %llu | %lld | %lld | `0x%x` | `%llx` | %llu | %.3f |\n",
+                rank,
+                row->quality,
+                row->threads,
+                (unsigned long long)row->run_generation,
+                (long long)row->deep_score,
+                (long long)row->quick_score,
+                row->flags,
+                (unsigned long long)row->best_id,
+                (unsigned long long)row->seed,
+                row->elapsed_seconds);
+    } else {
+        printf("%s%4u%s  %-6s  %3u  %7llu  %12lld  %12lld  0x%02x  %s%016llx%s  %8llu  %7.3fs\n",
+               c_bold(), rank, c_reset(),
+               row->quality,
+               row->threads,
+               (unsigned long long)row->run_generation,
+               (long long)row->deep_score,
+               (long long)row->quick_score,
+               row->flags,
+               c_cyan(), (unsigned long long)row->best_id, c_reset(),
+               (unsigned long long)row->seed,
+               row->elapsed_seconds);
+    }
+}
+
+static int write_history_report(const HistoryRow *rows, uint32_t row_count, uint32_t top) {
+    ensure_out_dir();
+    FILE *md = fopen("out/history.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/history.md\n");
+        return 0;
+    }
+
+    uint32_t limit = row_count < top ? row_count : top;
+    fprintf(md, "# hash-forge history\n\n");
+    fprintf(md, "- Rows read: `%u`\n", row_count);
+    fprintf(md, "- Top rows shown: `%u`\n\n", limit);
+    fprintf(md, "| rank | quality | threads | generations | deep | quick | flags | best id | seed | elapsed |\n");
+    fprintf(md, "|---:|---|---:|---:|---:|---:|---|---|---:|---:|\n");
+    for (uint32_t i = 0; i < limit; i++) {
+        print_history_row(md, i + 1, &rows[i], 1);
+    }
+    fclose(md);
+    return 1;
+}
+
+static int command_history(const HistoryOptions *options) {
+    FILE *file = fopen("out/history.csv", "rb");
+    if (!file) {
+        fprintf(stderr, "no history found at out/history.csv; run evolution first\n");
+        return 2;
+    }
+
+    HistoryRow *rows = (HistoryRow *)calloc(MAX_HISTORY_ROWS, sizeof(*rows));
+    if (!rows) {
+        fclose(file);
+        fprintf(stderr, "failed to allocate history rows\n");
+        return 1;
+    }
+
+    char line[1024];
+    uint32_t row_count = 0;
+    int first_line = 1;
+    while (fgets(line, sizeof(line), file)) {
+        if (first_line) {
+            first_line = 0;
+            continue;
+        }
+        if (row_count >= MAX_HISTORY_ROWS) break;
+        if (parse_history_row(line, &rows[row_count])) {
+            row_count++;
+        }
+    }
+    fclose(file);
+
+    if (row_count == 0) {
+        free(rows);
+        fprintf(stderr, "history has no run rows\n");
+        return 1;
+    }
+
+    qsort(rows, row_count, sizeof(rows[0]), compare_history_rows);
+    uint32_t limit = row_count < options->top ? row_count : options->top;
+
+    printf("\n%s%sHash Forge history top runs%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %srows%s       %u\n", c_dim(), c_reset(), row_count);
+    printf("  %sshowing%s    %u\n", c_dim(), c_reset(), limit);
+    printf("\n%s%4s  %-6s  %3s  %7s  %12s  %12s  %5s  %16s  %8s  %8s%s\n",
+           c_dim(), "rank", "qual", "thr", "gens", "deep", "quick", "flags", "best id", "seed", "elapsed", c_reset());
+    for (uint32_t i = 0; i < limit; i++) {
+        print_history_row(stdout, i + 1, &rows[i], 0);
+    }
+
+    int wrote = write_history_report(rows, row_count, options->top);
+    printf("\n%s%sHistory complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %soutput%s  %s\n", c_dim(), c_reset(), wrote ? "out/history.md" : "export failed");
+
+    free(rows);
+    return wrote ? 0 : 1;
+}
+
 static int parse_u64(const char *text, uint64_t *out) {
     char *end = NULL;
     unsigned long long value = strtoull(text, &end, 0);
@@ -2049,6 +2231,7 @@ static void print_usage(const char *program) {
     printf("  %s self-test\n", program);
     printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
+    printf("  %s history [--top <n>]\n", program);
     printf("  %s export-best\n", program);
 }
 
@@ -2170,6 +2353,25 @@ static int parse_bench_options(int argc, char **argv, BenchOptions *options) {
     return 1;
 }
 
+static int parse_history_options(int argc, char **argv, HistoryOptions *options) {
+    memset(options, 0, sizeof(*options));
+    options->top = 10;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--top") == 0 && i + 1 < argc) {
+            uint64_t top = 0;
+            if (!parse_u64(argv[++i], &top) || top == 0 || top > MAX_HISTORY_ROWS) {
+                fprintf(stderr, "invalid --top value\n");
+                return 0;
+            }
+            options->top = (uint32_t)top;
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int command_export_best(void) {
     FILE *file = fopen("out/best.c", "rb");
     if (!file) {
@@ -2207,6 +2409,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_bench(&options);
+    }
+
+    if (strcmp(argv[1], "history") == 0) {
+        HistoryOptions options;
+        if (!parse_history_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_history(&options);
     }
 
     if (strcmp(argv[1], "export-best") == 0) {
