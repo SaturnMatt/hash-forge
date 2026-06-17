@@ -326,6 +326,25 @@ static int writes_hash(const Candidate *candidate) {
     return 0;
 }
 
+static uint32_t fail_flag_count(uint32_t flags) {
+    uint32_t count = 0;
+    while (flags) {
+        count += flags & 1u;
+        flags >>= 1;
+    }
+    return count;
+}
+
+static uint32_t fail_severity(uint32_t flags) {
+    uint32_t severity = fail_flag_count(flags);
+    if (flags & FAIL_NO_HASH) severity += 1000;
+    if (flags & FAIL_ZERO) severity += 500;
+    if (flags & FAIL_BUCKET) severity += 200;
+    if (flags & FAIL_AVALANCHE) severity += 100;
+    if (flags & FAIL_COLLISION) severity += 50;
+    return severity;
+}
+
 static uint64_t random_constant(Rng *rng) {
     return splitmix64_next(rng) | 1ull;
 }
@@ -619,6 +638,9 @@ static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scr
 static int compare_candidates(const void *a_ptr, const void *b_ptr) {
     const Candidate *a = (const Candidate *)a_ptr;
     const Candidate *b = (const Candidate *)b_ptr;
+    uint32_t a_severity = fail_severity(a->fail_flags);
+    uint32_t b_severity = fail_severity(b->fail_flags);
+    if (a_severity != b_severity) return a_severity < b_severity ? -1 : 1;
     if (a->fail_flags != b->fail_flags) return a->fail_flags < b->fail_flags ? -1 : 1;
     if (a->deep_score != INT64_MIN || b->deep_score != INT64_MIN) {
         if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score ? -1 : 1;
@@ -1087,6 +1109,18 @@ static int run_selection_self_tests(void) {
     a.id = 1;
     b.id = 2;
     if (!self_check(compare_candidates(&a, &b) > 0, "selection prioritizes fail flags")) return 0;
+
+    a.fail_flags = FAIL_COLLISION;
+    b.fail_flags = FAIL_ZERO;
+    a.quick_score = -1000000;
+    b.quick_score = 1000000;
+    a.deep_score = -1000000;
+    b.deep_score = 1000000;
+    if (!self_check(compare_candidates(&a, &b) < 0, "selection weighs failure severity")) return 0;
+
+    a.fail_flags = FAIL_COLLISION;
+    b.fail_flags = FAIL_COLLISION | FAIL_AVALANCHE;
+    if (!self_check(compare_candidates(&a, &b) < 0, "selection prefers fewer failure flags")) return 0;
 
     memset(&a, 0, sizeof(a));
     memset(&b, 0, sizeof(b));
