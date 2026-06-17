@@ -68,6 +68,8 @@ crossover lane from survivor pairs, and injects fresh random immigrants to
 preserve diversity. On completion it writes:
 Opcode generation is lightly biased toward mixing-heavy operations such as
 `XOR`, `MUL`, and rotates while keeping every VM operation reachable.
+Generated and mutated instructions are repaired to avoid obvious dead forms
+such as self-MOV, multiply-by-one constants, and zero ADD/XOR constants.
 Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
 Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candidate

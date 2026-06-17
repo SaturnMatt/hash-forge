@@ -197,6 +197,8 @@ remove instruction, if above min length
 Opcode generation may be lightly biased toward useful mixing operations such as
 XOR, MUL, and rotates, but every VM opcode must remain reachable and covered by
 self-test invariants.
+Instruction generation and mutation should repair obvious dead forms such as
+self-MOV, multiply-by-one constants, and zero ADD/XOR constants.
 
 ## Test Suite
 

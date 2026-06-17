@@ -363,6 +363,26 @@ static uint8_t random_opcode(Rng *rng) {
     return weighted_ops[rng_range(rng, (uint32_t)(sizeof(weighted_ops) / sizeof(weighted_ops[0])))];
 }
 
+static void repair_instruction(Instruction *ins, Rng *rng) {
+    if (ins->dst >= REG_COUNT) ins->dst %= REG_COUNT;
+    if (ins->operand_reg >= REG_COUNT) ins->operand_reg %= REG_COUNT;
+    if (ins->shift == 0 || ins->shift >= 64) ins->shift = (uint8_t)(1 + rng_range(rng, 63));
+
+    if (ins->op == OP_SHL || ins->op == OP_SHR || ins->op == OP_ROTL || ins->op == OP_ROTR) {
+        ins->operand_kind = OPERAND_CONST;
+    }
+    if (ins->op == OP_MUL && ins->operand_kind == OPERAND_CONST) {
+        ins->constant |= 1ull;
+        if (ins->constant == 1ull) ins->constant = random_constant(rng);
+    }
+    if ((ins->op == OP_ADD || ins->op == OP_XOR) && ins->operand_kind == OPERAND_CONST && ins->constant == 0) {
+        ins->constant = random_constant(rng);
+    }
+    if (ins->op == OP_MOV && ins->operand_kind == OPERAND_REG && ins->operand_reg == ins->dst) {
+        ins->operand_reg = (uint8_t)((ins->dst + 1u + rng_range(rng, REG_COUNT - 1u)) % REG_COUNT);
+    }
+}
+
 static void random_instruction(Instruction *ins, Rng *rng, int force_hash_bias) {
     ins->op = random_opcode(rng);
     ins->dst = (uint8_t)(force_hash_bias ? 2 : rng_range(rng, REG_COUNT));
@@ -371,12 +391,7 @@ static void random_instruction(Instruction *ins, Rng *rng, int force_hash_bias) 
     ins->shift = (uint8_t)(1 + rng_range(rng, 63));
     ins->constant = random_constant(rng);
 
-    if (ins->op == OP_SHL || ins->op == OP_SHR || ins->op == OP_ROTL || ins->op == OP_ROTR) {
-        ins->operand_kind = OPERAND_CONST;
-    }
-    if (ins->op == OP_MUL) {
-        ins->constant |= 1ull;
-    }
+    repair_instruction(ins, rng);
 }
 
 static void random_candidate(Candidate *candidate, Rng *rng) {
@@ -432,12 +447,7 @@ static void mutate_candidate(Candidate *child, const Candidate *parent, Rng *rng
             case 3: ins->constant = random_constant(rng); break;
             case 4: ins->shift = (uint8_t)(1 + rng_range(rng, 63)); break;
             }
-            if (ins->op == OP_SHL || ins->op == OP_SHR || ins->op == OP_ROTL || ins->op == OP_ROTR) {
-                ins->operand_kind = OPERAND_CONST;
-            }
-            if (ins->op == OP_MUL) {
-                ins->constant |= 1ull;
-            }
+            repair_instruction(ins, rng);
         }
     }
 
@@ -1178,10 +1188,26 @@ static int run_generation_self_tests(void) {
         Instruction ins;
         random_instruction(&ins, &op_rng, 0);
         if (ins.op < OP_COUNT) op_seen[ins.op]++;
+        if (!self_check(!(ins.op == OP_MOV && ins.operand_kind == OPERAND_REG && ins.operand_reg == ins.dst),
+                        "random instruction avoids self MOV")) return 0;
+        if (!self_check(!(ins.op == OP_MUL && ins.operand_kind == OPERAND_CONST && ins.constant == 1ull),
+                        "random instruction avoids multiply by one")) return 0;
+        if (!self_check(!((ins.op == OP_ADD || ins.op == OP_XOR) && ins.operand_kind == OPERAND_CONST && ins.constant == 0),
+                        "random instruction avoids zero add/xor constants")) return 0;
     }
     for (uint32_t i = 0; i < OP_COUNT; i++) {
         if (!self_check(op_seen[i] > 0, "weighted opcode sampler reaches every op")) return 0;
     }
+
+    Instruction repaired = { OP_MOV, 2, OPERAND_REG, 2, 0, 0 };
+    repair_instruction(&repaired, &op_rng);
+    if (!self_check(repaired.operand_reg != repaired.dst, "repair fixes self MOV")) return 0;
+    repaired = (Instruction){ OP_MUL, 2, OPERAND_CONST, 0, 99, 1 };
+    repair_instruction(&repaired, &op_rng);
+    if (!self_check(repaired.constant != 1ull && (repaired.constant & 1ull), "repair fixes multiply by one")) return 0;
+    repaired = (Instruction){ OP_ADD, 2, OPERAND_CONST, 0, 99, 0 };
+    repair_instruction(&repaired, &op_rng);
+    if (!self_check(repaired.constant != 0, "repair fixes zero ADD constant")) return 0;
 
     printf("generation tests: pass\n");
     return 1;
