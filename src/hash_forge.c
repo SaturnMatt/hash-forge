@@ -23,6 +23,7 @@
 #define MAX_PROGRAM_LEN 16
 #define POPULATION_SIZE 256
 #define SURVIVOR_COUNT 32
+#define IMMIGRANT_COUNT 8
 #define DEEP_EVERY 25
 #define DEEP_TOP_N 8
 #define COLLISION_TABLE_SIZE 65536u
@@ -642,6 +643,7 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
+    fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
     fprintf(md, "- Deep score cadence: every `%u` generations\n", DEEP_EVERY);
     fprintf(md, "- Deep score top N: `%u`\n", DEEP_TOP_N);
@@ -1163,7 +1165,8 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
     printf("  %sthreads%s      %u scoring worker%s%s\n",
            c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s",
            options->auto_threads ? " (auto)" : "");
-    printf("  %spopulation%s   %u candidates, %u survivors\n", c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT);
+    printf("  %spopulation%s   %u candidates, %u survivors, %u immigrants\n",
+           c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT, IMMIGRANT_COUNT);
     printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
            c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
 }
@@ -1373,11 +1376,18 @@ static int command_run(const RunOptions *options) {
         for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
             next[i] = population[i];
         }
-        for (uint32_t i = SURVIVOR_COUNT; i < POPULATION_SIZE; i++) {
+        uint32_t immigrant_start = POPULATION_SIZE > IMMIGRANT_COUNT ? POPULATION_SIZE - IMMIGRANT_COUNT : SURVIVOR_COUNT;
+        if (immigrant_start < SURVIVOR_COUNT) immigrant_start = SURVIVOR_COUNT;
+        for (uint32_t i = SURVIVOR_COUNT; i < immigrant_start; i++) {
             uint32_t r = rng_range(&rng, SURVIVOR_COUNT * SURVIVOR_COUNT);
             uint32_t parent_index = r / SURVIVOR_COUNT;
             if (parent_index >= SURVIVOR_COUNT) parent_index = SURVIVOR_COUNT - 1;
             mutate_candidate(&next[i], &population[parent_index], &rng);
+        }
+        for (uint32_t i = immigrant_start; i < POPULATION_SIZE; i++) {
+            random_candidate(&next[i], &rng);
+            next[i].generation = (uint32_t)generation;
+            next[i].id = candidate_id(&next[i]);
         }
 
         Candidate *tmp = population;
