@@ -94,6 +94,8 @@ typedef struct Candidate {
 
 typedef struct ScoreScratch {
     uint64_t collision_keys[COLLISION_TABLE_SIZE];
+    uint64_t collision_input_keys[COLLISION_TABLE_SIZE];
+    uint64_t collision_input_seeds[COLLISION_TABLE_SIZE];
     uint32_t collision_seen[COLLISION_TABLE_SIZE];
     uint32_t collision_epoch;
     int bucket_counts[64];
@@ -112,6 +114,13 @@ typedef struct ScoreResult {
     uint32_t fail_flags;
     uint32_t eval_count;
 } ScoreResult;
+
+typedef uint64_t (*HashEvalFn)(void *ctx, uint64_t key, uint64_t seed);
+
+typedef struct HashSubject {
+    HashEvalFn eval;
+    void *ctx;
+} HashSubject;
 
 typedef struct RunOptions {
     uint64_t seed;
@@ -163,6 +172,27 @@ typedef struct BenchResult {
     double quick_hash_rate;
     double deep_hash_rate;
 } BenchResult;
+
+typedef struct BaselineOptions {
+    uint64_t seed;
+    QualityMode quality;
+    int deep;
+} BaselineOptions;
+
+typedef struct BaselineResult {
+    const char *name;
+    const char *note;
+    ScoreResult score;
+} BaselineResult;
+
+typedef uint64_t (*BaselineHashFn)(uint64_t key, uint64_t seed);
+
+typedef struct BaselineCase {
+    const char *name;
+    BaselineHashFn fn;
+    const char *note;
+    uint64_t id;
+} BaselineCase;
 
 typedef struct HistoryOptions {
     uint32_t top;
@@ -406,6 +436,78 @@ static uint64_t eval_candidate(const Candidate *candidate, uint64_t key, uint64_
 
     return r[2];
 }
+
+static uint64_t eval_candidate_subject(void *ctx, uint64_t key, uint64_t seed) {
+    return eval_candidate((const Candidate *)ctx, key, seed);
+}
+
+static uint64_t splitmix64_mix(uint64_t x) {
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+    return x ^ (x >> 31);
+}
+
+static uint64_t murmur3_fmix64(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdull;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ull;
+    x ^= x >> 33;
+    return x;
+}
+
+static uint64_t baseline_splitmix64_pair(uint64_t key, uint64_t seed) {
+    uint64_t x = splitmix64_mix(key + 0x9e3779b97f4a7c15ull);
+    x ^= seed + 0xbf58476d1ce4e5b9ull;
+    return splitmix64_mix(x);
+}
+
+static uint64_t baseline_murmur3_fmix64_pair(uint64_t key, uint64_t seed) {
+    uint64_t a = murmur3_fmix64(key ^ 0x9e3779b97f4a7c15ull);
+    uint64_t b = murmur3_fmix64(seed ^ 0xbf58476d1ce4e5b9ull);
+    return murmur3_fmix64(a ^ rotl64(b, 31) ^ 0x94d049bb133111ebull);
+}
+
+static uint64_t baseline_fnv1a64_pair(uint64_t key, uint64_t seed) {
+    uint64_t h = 14695981039346656037ull;
+    for (int word = 0; word < 2; word++) {
+        uint64_t x = word == 0 ? key : seed;
+        for (int i = 0; i < 8; i++) {
+            h ^= (x >> (i * 8)) & 0xffu;
+            h *= 1099511628211ull;
+        }
+    }
+    return h;
+}
+
+typedef struct BaselineEvalCtx {
+    BaselineHashFn fn;
+} BaselineEvalCtx;
+
+static uint64_t eval_baseline_subject(void *ctx, uint64_t key, uint64_t seed) {
+    return ((const BaselineEvalCtx *)ctx)->fn(key, seed);
+}
+
+static const BaselineCase baseline_cases[] = {
+    {
+        "splitmix64_finalizer",
+        baseline_splitmix64_pair,
+        "SplitMix64-style finalizer over combined key and seed.",
+        0x51a1c0de00000001ull
+    },
+    {
+        "murmur3_fmix64",
+        baseline_murmur3_fmix64_pair,
+        "MurmurHash3 64-bit finalizer over combined key and seed.",
+        0x51a1c0de00000002ull
+    },
+    {
+        "fnv1a64_pair",
+        baseline_fnv1a64_pair,
+        "FNV-1a over little-endian key and seed bytes.",
+        0x51a1c0de00000003ull
+    }
+};
 
 static uint64_t candidate_id(const Candidate *candidate) {
     uint64_t h = 1469598103934665603ull;
@@ -655,28 +757,33 @@ static int ensure_unique_candidate(Candidate *candidate, const Candidate *existi
     return changed;
 }
 
-static int collision_add(ScoreScratch *scratch, uint64_t h) {
+static int collision_add(ScoreScratch *scratch, uint64_t key, uint64_t seed, uint64_t h) {
     uint32_t mask = COLLISION_TABLE_SIZE - 1u;
     uint32_t at = (uint32_t)(h ^ (h >> 32)) & mask;
     for (;;) {
         if (scratch->collision_seen[at] != scratch->collision_epoch) {
             scratch->collision_seen[at] = scratch->collision_epoch;
             scratch->collision_keys[at] = h;
+            scratch->collision_input_keys[at] = key;
+            scratch->collision_input_seeds[at] = seed;
             return 0;
         }
         if (scratch->collision_keys[at] == h) {
+            if (scratch->collision_input_keys[at] == key && scratch->collision_input_seeds[at] == seed) {
+                return 0;
+            }
             return 1;
         }
         at = (at + 1u) & mask;
     }
 }
 
-static int64_t score_zero(const Candidate *candidate, uint32_t *flags) {
+static int64_t score_zero(const HashSubject *subject, uint32_t *flags) {
     uint64_t out[4];
-    out[0] = eval_candidate(candidate, 0, 0);
-    out[1] = eval_candidate(candidate, 0, 1);
-    out[2] = eval_candidate(candidate, 1, 0);
-    out[3] = eval_candidate(candidate, 1, 1);
+    out[0] = subject->eval(subject->ctx, 0, 0);
+    out[1] = subject->eval(subject->ctx, 0, 1);
+    out[2] = subject->eval(subject->ctx, 1, 0);
+    out[3] = subject->eval(subject->ctx, 1, 1);
 
     int64_t score = 4000;
     for (int i = 0; i < 4; i++) {
@@ -694,7 +801,7 @@ static int64_t score_zero(const Candidate *candidate, uint32_t *flags) {
     return score;
 }
 
-static int64_t score_collisions(const Candidate *candidate, ScoreScratch *scratch, uint64_t seed, int iterations, uint32_t *flags, uint32_t *evals) {
+static int64_t score_collisions(const HashSubject *subject, ScoreScratch *scratch, uint64_t seed, int iterations, uint32_t *flags, uint32_t *evals) {
     scratch->collision_epoch++;
     if (scratch->collision_epoch == 0) {
         memset(scratch->collision_seen, 0, sizeof(scratch->collision_seen));
@@ -710,27 +817,30 @@ static int64_t score_collisions(const Candidate *candidate, ScoreScratch *scratc
     uint64_t rec2 = splitmix64_next(&rng);
     uint64_t rec3 = splitmix64_next(&rng);
 
-#define ADD_HASH(expr) do { collisions += collision_add(scratch, (expr)); outputs++; } while (0)
+#define ADD_HASH(k, s, expr) do { collisions += collision_add(scratch, (k), (s), (expr)); outputs++; } while (0)
     for (int i = 0; i < iterations; i++) {
         uint64_t r1 = splitmix64_next(&rng);
         uint64_t r2 = splitmix64_next(&rng);
         uint64_t s = (uint64_t)i;
-        ADD_HASH(eval_candidate(candidate, 0, r1));
-        ADD_HASH(eval_candidate(candidate, r1, 0));
-        ADD_HASH(eval_candidate(candidate, constant, r1));
-        ADD_HASH(eval_candidate(candidate, r1, constant));
-        ADD_HASH(eval_candidate(candidate, r1, r2));
-        ADD_HASH(eval_candidate(candidate, r2, r1));
-        ADD_HASH(eval_candidate(candidate, s, 0));
-        ADD_HASH(eval_candidate(candidate, 0, s));
-        ADD_HASH(eval_candidate(candidate, seq1, seq2));
-        ADD_HASH(eval_candidate(candidate, seq2, seq1));
-        rec1 = eval_candidate(candidate, rec1, constant);
-        rec2 = eval_candidate(candidate, constant, rec2);
-        rec3 = eval_candidate(candidate, rec3, rec3);
-        ADD_HASH(rec1);
-        ADD_HASH(rec2);
-        ADD_HASH(rec3);
+        ADD_HASH(0, r1, subject->eval(subject->ctx, 0, r1));
+        ADD_HASH(r1, 0, subject->eval(subject->ctx, r1, 0));
+        ADD_HASH(constant, r1, subject->eval(subject->ctx, constant, r1));
+        ADD_HASH(r1, constant, subject->eval(subject->ctx, r1, constant));
+        ADD_HASH(r1, r2, subject->eval(subject->ctx, r1, r2));
+        ADD_HASH(r2, r1, subject->eval(subject->ctx, r2, r1));
+        ADD_HASH(s, 0, subject->eval(subject->ctx, s, 0));
+        ADD_HASH(0, s, subject->eval(subject->ctx, 0, s));
+        ADD_HASH(seq1, seq2, subject->eval(subject->ctx, seq1, seq2));
+        ADD_HASH(seq2, seq1, subject->eval(subject->ctx, seq2, seq1));
+        uint64_t rec_key = rec1;
+        rec1 = subject->eval(subject->ctx, rec_key, constant);
+        ADD_HASH(rec_key, constant, rec1);
+        uint64_t rec_seed = rec2;
+        rec2 = subject->eval(subject->ctx, constant, rec_seed);
+        ADD_HASH(constant, rec_seed, rec2);
+        rec_key = rec3;
+        rec3 = subject->eval(subject->ctx, rec_key, rec_key);
+        ADD_HASH(rec_key, rec_key, rec3);
         seq1++;
         seq2++;
     }
@@ -743,7 +853,7 @@ static int64_t score_collisions(const Candidate *candidate, ScoreScratch *scratc
     return (int64_t)outputs * 200 - (int64_t)collisions * 20000;
 }
 
-static int64_t score_buckets(const Candidate *candidate, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
+static int64_t score_buckets(const HashSubject *subject, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
     Rng rng = { seed };
     uint64_t key0 = splitmix64_next(&rng);
     uint64_t seed0 = splitmix64_next(&rng);
@@ -757,7 +867,7 @@ static int64_t score_buckets(const Candidate *candidate, ScoreScratch *scratch, 
             for (int i = 0; i < iterations; i++) {
                 uint64_t key = mode == 0 ? key0 + (uint64_t)i : key0;
                 uint64_t s = mode == 1 ? seed0 + (uint64_t)i : seed0;
-                uint64_t h = eval_candidate(candidate, key, s);
+                uint64_t h = subject->eval(subject->ctx, key, s);
                 scratch->bucket_counts[h % (uint64_t)buckets]++;
             }
             int expected = iterations / buckets;
@@ -777,7 +887,7 @@ static int64_t score_buckets(const Candidate *candidate, ScoreScratch *scratch, 
     return score;
 }
 
-static int64_t score_avalanche(const Candidate *candidate, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
+static int64_t score_avalanche(const HashSubject *subject, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
     Rng rng = { seed };
     int bit_step = deep ? 1 : 4;
     int64_t score = 0;
@@ -793,7 +903,7 @@ static int64_t score_avalanche(const Candidate *candidate, ScoreScratch *scratch
                 uint64_t s2 = s;
                 if (variant == 0 || variant == 2 || variant == 4) key2 ^= 1ull << bit;
                 if (variant == 1 || variant == 3 || variant == 4) s2 ^= 1ull << bit;
-                uint64_t diff = eval_candidate(candidate, key, s) ^ eval_candidate(candidate, key2, s2);
+                uint64_t diff = subject->eval(subject->ctx, key, s) ^ subject->eval(subject->ctx, key2, s2);
                 for (int out_bit = 0; out_bit < 64; out_bit++) {
                     scratch->bit_counts[out_bit] += (int)((diff >> out_bit) & 1ull);
                 }
@@ -815,7 +925,7 @@ static int64_t score_avalanche(const Candidate *candidate, ScoreScratch *scratch
     return score;
 }
 
-static int64_t score_differentials(const Candidate *candidate, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
+static int64_t score_differentials(const HashSubject *subject, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
     Rng rng = { seed };
     int bucket_count = deep ? 16 : 8;
     int64_t score = 0;
@@ -833,7 +943,7 @@ static int64_t score_differentials(const Candidate *candidate, ScoreScratch *scr
             if (mode == 0 || mode == 2) key2++;
             if (mode == 1 || mode == 2) s2++;
 
-            uint64_t diff = eval_candidate(candidate, key, s) ^ eval_candidate(candidate, key2, s2);
+            uint64_t diff = subject->eval(subject->ctx, key, s) ^ subject->eval(subject->ctx, key2, s2);
             if (diff == 0) zero_diffs++;
             int pop_abs = popcount64(diff) - 32;
             if (pop_abs < 0) pop_abs = -pop_abs;
@@ -859,7 +969,7 @@ static int64_t score_differentials(const Candidate *candidate, ScoreScratch *scr
     return score - (int64_t)zero_diffs * 5000;
 }
 
-static int64_t score_input_sensitivity(const Candidate *candidate, uint64_t seed, int iterations, uint32_t *flags, uint32_t *evals) {
+static int64_t score_input_sensitivity(const HashSubject *subject, uint64_t seed, int iterations, uint32_t *flags, uint32_t *evals) {
     Rng rng = { seed };
     int key_zero = 0;
     int seed_zero = 0;
@@ -869,10 +979,10 @@ static int64_t score_input_sensitivity(const Candidate *candidate, uint64_t seed
     for (int i = 0; i < iterations; i++) {
         uint64_t key = splitmix64_next(&rng) + (uint64_t)i;
         uint64_t s = splitmix64_next(&rng) + ((uint64_t)i << 32);
-        uint64_t h = eval_candidate(candidate, key, s);
-        uint64_t key_diff = h ^ eval_candidate(candidate, key ^ 0x9e3779b97f4a7c15ull, s);
-        uint64_t seed_diff = h ^ eval_candidate(candidate, key, s ^ 0xbf58476d1ce4e5b9ull);
-        uint64_t both_diff = h ^ eval_candidate(candidate, key ^ 0xd1b54a32d192ed03ull, s ^ 0x94d049bb133111ebull);
+        uint64_t h = subject->eval(subject->ctx, key, s);
+        uint64_t key_diff = h ^ subject->eval(subject->ctx, key ^ 0x9e3779b97f4a7c15ull, s);
+        uint64_t seed_diff = h ^ subject->eval(subject->ctx, key, s ^ 0xbf58476d1ce4e5b9ull);
+        uint64_t both_diff = h ^ subject->eval(subject->ctx, key ^ 0xd1b54a32d192ed03ull, s ^ 0x94d049bb133111ebull);
         if (key_diff == 0) key_zero++;
         if (seed_diff == 0) seed_zero++;
         if (both_diff == 0) both_zero++;
@@ -895,23 +1005,19 @@ static int64_t score_input_sensitivity(const Candidate *candidate, uint64_t seed
     return score - (int64_t)(key_zero + seed_zero + both_zero) * 8000;
 }
 
-static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
+static ScoreResult score_subject(const HashSubject *subject, uint64_t subject_id, uint32_t size_penalty_count,
+                                 ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
     const int iterations = score_iterations_for_quality(quality, deep);
     ScoreResult result;
     memset(&result, 0, sizeof(result));
-    if (!writes_hash(candidate)) {
-        result.fail_flags |= FAIL_NO_HASH;
-        result.score -= 1000000;
-    }
-
-    result.zero_score = score_zero(candidate, &result.fail_flags);
+    result.zero_score = score_zero(subject, &result.fail_flags);
     result.eval_count += 4;
-    result.collision_score = score_collisions(candidate, scratch, mix_seed(run_seed, candidate->id, 11), iterations, &result.fail_flags, &result.eval_count);
-    result.bucket_score = score_buckets(candidate, scratch, mix_seed(run_seed, candidate->id, 22), deep ? iterations * 2 : iterations, deep, &result.fail_flags, &result.eval_count);
-    result.avalanche_score = score_avalanche(candidate, scratch, mix_seed(run_seed, candidate->id, 33), iterations, deep, &result.fail_flags, &result.eval_count);
-    result.differential_score = score_differentials(candidate, scratch, mix_seed(run_seed, candidate->id, 44), iterations, deep, &result.fail_flags, &result.eval_count);
-    result.sensitivity_score = score_input_sensitivity(candidate, mix_seed(run_seed, candidate->id, 55), iterations, &result.fail_flags, &result.eval_count);
-    result.size_penalty = -((int64_t)candidate->instruction_count * 20);
+    result.collision_score = score_collisions(subject, scratch, mix_seed(run_seed, subject_id, 11), iterations, &result.fail_flags, &result.eval_count);
+    result.bucket_score = score_buckets(subject, scratch, mix_seed(run_seed, subject_id, 22), deep ? iterations * 2 : iterations, deep, &result.fail_flags, &result.eval_count);
+    result.avalanche_score = score_avalanche(subject, scratch, mix_seed(run_seed, subject_id, 33), iterations, deep, &result.fail_flags, &result.eval_count);
+    result.differential_score = score_differentials(subject, scratch, mix_seed(run_seed, subject_id, 44), iterations, deep, &result.fail_flags, &result.eval_count);
+    result.sensitivity_score = score_input_sensitivity(subject, mix_seed(run_seed, subject_id, 55), iterations, &result.fail_flags, &result.eval_count);
+    result.size_penalty = -((int64_t)size_penalty_count * 20);
     result.score += result.zero_score;
     result.score += result.collision_score;
     result.score += result.bucket_score;
@@ -920,6 +1026,22 @@ static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scr
     result.score += result.sensitivity_score;
     result.score += result.size_penalty;
     return result;
+}
+
+static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
+    HashSubject subject = { eval_candidate_subject, (void *)candidate };
+    ScoreResult result = score_subject(&subject, candidate->id, candidate->instruction_count, scratch, run_seed, deep, quality);
+    if (!writes_hash(candidate)) {
+        result.fail_flags |= FAIL_NO_HASH;
+        result.score -= 1000000;
+    }
+    return result;
+}
+
+static ScoreResult score_baseline_case(const BaselineCase *baseline, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
+    BaselineEvalCtx ctx = { baseline->fn };
+    HashSubject subject = { eval_baseline_subject, &ctx };
+    return score_subject(&subject, baseline->id, 0, scratch, run_seed, deep, quality);
 }
 
 static int compare_candidates(const void *a_ptr, const void *b_ptr) {
@@ -1198,6 +1320,22 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
             print_fail_flags(md, score.fail_flags);
             fprintf(md, ") |\n");
         }
+        fprintf(md, "\n");
+        fprintf(md, "## Established hash baselines\n\n");
+        fprintf(md, "| reference | deep score | flags | note |\n");
+        fprintf(md, "|---|---:|---|---|\n");
+        for (uint32_t i = 0; i < sizeof(baseline_cases) / sizeof(baseline_cases[0]); i++) {
+            ScoreResult score = score_baseline_case(&baseline_cases[i], comparison_scratch, options->seed, 1, options->quality);
+            fprintf(md, "| %s | %lld | `0x%x` (",
+                    baseline_cases[i].name,
+                    (long long)score.score,
+                    score.fail_flags);
+            print_fail_flags(md, score.fail_flags);
+            fprintf(md, ") | %s |\n", baseline_cases[i].note);
+        }
+        fprintf(md, "\n");
+        fprintf(md, "Run winners should be judged against these references by fail flags first, then deep score. ");
+        fprintf(md, "Matching or beating a reference here is a lab signal, not proof of universal hash quality.\n");
         free(comparison_scratch);
     } else {
         fprintf(md, "Skipped: failed to allocate comparison scratch space.\n");
@@ -1225,6 +1363,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- `out/latest_export_path.txt`: path to the latest archived C export\n");
     fprintf(md, "- `out/history.csv`: compact append-only run history\n");
     fprintf(md, "- `out/compare.md`: latest deterministic policy comparison report\n");
+    fprintf(md, "- `out/baselines.md`: latest established-hash baseline report\n");
     fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
 
     fprintf(md, "## Interpretation note\n\n");
@@ -2732,6 +2871,89 @@ static int command_bench(const BenchOptions *options) {
     return wrote ? 0 : 1;
 }
 
+static int write_baselines_report(const BaselineOptions *options, const BaselineResult *results, uint32_t result_count) {
+    ensure_out_dir();
+    FILE *md = fopen("out/baselines.md", "wb");
+    if (!md) {
+        fprintf(stderr, "failed to open out/baselines.md\n");
+        return 0;
+    }
+
+    fprintf(md, "# hash-forge established hash baselines\n\n");
+    fprintf(md, "## Settings\n\n");
+    fprintf(md, "- Seed: `%llu`\n", (unsigned long long)options->seed);
+    fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
+    fprintf(md, "- Depth: `%s`\n", options->deep ? "deep" : "quick");
+    fprintf(md, "- Hash evals per reference: `%u`\n\n", score_hash_evals_per_candidate(options->quality, options->deep));
+
+    fprintf(md, "## Results\n\n");
+    fprintf(md, "| reference | score | flags | evals | note |\n");
+    fprintf(md, "|---|---:|---|---:|---|\n");
+    for (uint32_t i = 0; i < result_count; i++) {
+        fprintf(md, "| %s | %lld | `0x%x` (",
+                results[i].name,
+                (long long)results[i].score.score,
+                results[i].score.fail_flags);
+        print_fail_flags(md, results[i].score.fail_flags);
+        fprintf(md, ") | %u | %s |\n",
+                results[i].score.eval_count,
+                results[i].note);
+    }
+
+    fprintf(md, "\n## How to use this\n\n");
+    fprintf(md, "Use these rows as non-cryptographic reference marks for the lab. ");
+    fprintf(md, "A forged candidate should be compared by decoded fail flags first, then score, then speed and exported instruction count. ");
+    fprintf(md, "These tests are exploratory quality signals; they are not cryptographic proof and they do not replace broader domain-specific validation.\n");
+
+    fclose(md);
+    return 1;
+}
+
+static int command_baselines(const BaselineOptions *options) {
+    ScoreScratch *scratch = (ScoreScratch *)calloc(1, sizeof(*scratch));
+    BaselineResult results[sizeof(baseline_cases) / sizeof(baseline_cases[0])];
+    if (!scratch) {
+        fprintf(stderr, "failed to allocate baseline score scratch\n");
+        return 1;
+    }
+
+    printf("\n%s%sHash Forge established baselines%s\n", c_bold(), c_cyan(), c_reset());
+    printf("  %sseed%s       %llu\n", c_dim(), c_reset(), (unsigned long long)options->seed);
+    printf("  %squality%s    %s\n", c_dim(), c_reset(), quality_name(options->quality));
+    printf("  %sdepth%s      %s\n", c_dim(), c_reset(), options->deep ? "deep" : "quick");
+    printf("  %shash evals%s %u/reference\n\n",
+           c_dim(), c_reset(), score_hash_evals_per_candidate(options->quality, options->deep));
+
+    printf("%s%-24s  %14s  %8s  %8s  %s%s\n",
+           c_dim(), "reference", "score", "flags", "evals", "decoded flags", c_reset());
+
+    uint32_t result_count = 0;
+    for (uint32_t i = 0; i < sizeof(baseline_cases) / sizeof(baseline_cases[0]); i++) {
+        BaselineResult *result = &results[result_count++];
+        result->name = baseline_cases[i].name;
+        result->note = baseline_cases[i].note;
+        result->score = score_baseline_case(&baseline_cases[i], scratch, options->seed, options->deep, options->quality);
+
+        printf("%-24s  %s%14lld%s  0x%06x  %8u  ",
+               result->name,
+               result->score.fail_flags ? c_yellow() : c_green(),
+               (long long)result->score.score,
+               c_reset(),
+               result->score.fail_flags,
+               result->score.eval_count);
+        print_fail_flags(stdout, result->score.fail_flags);
+        printf("\n");
+    }
+
+    int wrote = write_baselines_report(options, results, result_count);
+    printf("\n%s%sBaselines complete%s\n", c_bold(), c_green(), c_reset());
+    printf("  %soutput%s  %s\n", c_dim(), c_reset(), wrote ? "out/baselines.md" : "export failed");
+    printf("  %sread%s    compare evolved winners by flags first, then deep score\n", c_dim(), c_reset());
+
+    free(scratch);
+    return wrote ? 0 : 1;
+}
+
 static int parse_history_row(const char *line, HistoryRow *row) {
     unsigned threads = 0;
     unsigned candidate_generation = 0;
@@ -2948,6 +3170,7 @@ static void print_usage(const char *program) {
     printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
+    printf("  %s baselines [--seed <u64>] [--quality <quick|normal|deep>] [--quick|--deep]\n", program);
     printf("  %s history [--top <n>]\n", program);
     printf("  %s export-best\n", program);
 }
@@ -3129,6 +3352,41 @@ static int parse_compare_options(int argc, char **argv, CompareOptions *options)
     return 1;
 }
 
+static int parse_baseline_options(int argc, char **argv, BaselineOptions *options) {
+    memset(options, 0, sizeof(*options));
+    options->seed = 123;
+    options->quality = QUALITY_DEEP;
+    options->deep = 1;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->seed)) {
+                fprintf(stderr, "invalid --seed value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
+            const char *quality = argv[++i];
+            if (strcmp(quality, "quick") == 0) {
+                options->quality = QUALITY_QUICK;
+            } else if (strcmp(quality, "normal") == 0) {
+                options->quality = QUALITY_NORMAL;
+            } else if (strcmp(quality, "deep") == 0) {
+                options->quality = QUALITY_DEEP;
+            } else {
+                fprintf(stderr, "invalid --quality value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--quick") == 0) {
+            options->deep = 0;
+        } else if (strcmp(argv[i], "--deep") == 0) {
+            options->deep = 1;
+        } else {
+            fprintf(stderr, "unknown argument: %s\n", argv[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int parse_history_options(int argc, char **argv, HistoryOptions *options) {
     memset(options, 0, sizeof(*options));
     options->top = 10;
@@ -3193,6 +3451,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return command_compare(&options);
+    }
+
+    if (strcmp(argv[1], "baselines") == 0) {
+        BaselineOptions options;
+        if (!parse_baseline_options(argc, argv, &options)) {
+            return 2;
+        }
+        return command_baselines(&options);
     }
 
     if (strcmp(argv[1], "history") == 0) {

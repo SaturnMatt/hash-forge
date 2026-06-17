@@ -57,6 +57,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-starter --no-refresh
 .\build\hash-forge.exe compare --seed 123 --seeds 3 --generations 25 --threads 4
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
+.\build\hash-forge.exe baselines --seed 123 --quality deep
 .\build\hash-forge.exe history --top 10
 .\build\hash-forge.exe export-best
 ```
@@ -99,6 +100,7 @@ out\history.md
 out\summary.txt
 out\bench.md
 out\compare.md
+out\baselines.md
 ```
 
 `out\best.c` is standalone C containing the exported winner. Export removes
@@ -135,6 +137,13 @@ choosing thread counts, not hash quality scores.
 no-refresh, and bare settings across one or more seeds, prints aggregate wins
 and averages, then writes `out\compare.md`.
 
+`baselines` scores established non-cryptographic 64-bit reference mixers with
+the same zero, collision, bucket, avalanche, differential, and sensitivity
+tests used for evolved candidates, then writes `out\baselines.md`. Use these
+rows as lab reference marks: fail flags matter first, then deep score, then
+speed and exported instruction count. Matching or beating a baseline is useful
+evidence, not cryptographic proof.
+
 ## Tests
 
 ```powershell
@@ -149,7 +158,8 @@ compares deterministic 100-generation runs across `--threads 1` and
 values, verifies `--threads auto`, verifies `out/report.md` and
 `out/summary.txt`, checks quality modes, checks time-limited run contracts,
 verifies `bench` plus `out/bench.md`, verifies policy comparison output,
-verifies history leaderboard output, and compiles `out/best.c` independently.
+verifies established-hash baseline output, verifies history leaderboard output,
+and compiles `out/best.c` independently.
 
 `smoke.ps1` is a compatibility entry point that runs the same strict suite.
 

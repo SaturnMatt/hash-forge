@@ -8,6 +8,7 @@ $summaryPath = Join-Path $root "out\summary.txt"
 $reportPath = Join-Path $root "out\report.md"
 $benchPath = Join-Path $root "out\bench.md"
 $comparePath = Join-Path $root "out\compare.md"
+$baselinesPath = Join-Path $root "out\baselines.md"
 $historyMdPath = Join-Path $root "out\history.md"
 $bestCPath = Join-Path $root "out\best.c"
 $bestTxtPath = Join-Path $root "out\best.txt"
@@ -119,9 +120,14 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Baseline comparison") "report missing baseline comparison"
     Assert ($report -match "baseline_mixer") "report missing baseline mixer comparison"
     Assert ($report -match "bad_xor_only") "report missing bad xor comparison"
+    Assert ($report -match "Established hash baselines") "report missing established baselines"
+    Assert ($report -match "splitmix64_finalizer") "report missing splitmix baseline"
+    Assert ($report -match "murmur3_fmix64") "report missing murmur fmix baseline"
+    Assert ($report -match "fnv1a64_pair") "report missing fnv baseline"
     Assert ($report -match [regex]::Escape("out/runs/*.md")) "report missing archived report reference"
     Assert ($report -match [regex]::Escape("out/runs/*.c")) "report missing archived C export reference"
     Assert ($report -match [regex]::Escape("out/history.csv")) "report missing history CSV reference"
+    Assert ($report -match [regex]::Escape("out/baselines.md")) "report missing baselines report reference"
     Assert ($report -match "VM instruction listing") "report missing instruction listing"
     Assert ($report -match [regex]::Escape("out/best.c")) "report missing best.c reference"
     Assert (Test-Path $latestReportPath) "missing out\latest_report_path.txt"
@@ -210,6 +216,20 @@ function Assert-CompareReport {
     Assert ($compare -match "bare") "compare report missing bare policy"
 }
 
+function Assert-BaselinesReport {
+    Assert (Test-Path $baselinesPath) "missing out\baselines.md"
+    $baselines = Get-Content $baselinesPath -Raw
+    Assert ($baselines -match "hash-forge established hash baselines") "baselines report missing title"
+    Assert ($baselines -match "Seed") "baselines report missing seed"
+    Assert ($baselines -match "Quality") "baselines report missing quality"
+    Assert ($baselines -match "splitmix64_finalizer") "baselines report missing splitmix"
+    Assert ($baselines -match "murmur3_fmix64") "baselines report missing murmur fmix"
+    Assert ($baselines -match "fnv1a64_pair") "baselines report missing fnv"
+    Assert ($baselines -match "flags") "baselines report missing flags"
+    Assert ($baselines -match "Hash evals per reference") "baselines report missing eval count"
+    Assert ($baselines -match "How to use this") "baselines report missing interpretation"
+}
+
 function Assert-HistoryReport {
     Assert (Test-Path $historyMdPath) "missing out\history.md"
     $historyReport = Get-Content $historyMdPath -Raw
@@ -256,6 +276,8 @@ $badBench = Invoke-Captured $exe @("bench") @(2)
 Assert ($badBench.Output -match "bench requires --seconds") "missing bench seconds error text changed"
 $badCompare = Invoke-Captured $exe @("compare", "--seeds", "0") @(2)
 Assert ($badCompare.Output -match "invalid --seeds") "bad-compare-seeds error text changed"
+$badBaselines = Invoke-Captured $exe @("baselines", "--quality", "maximum") @(2)
+Assert ($badBaselines.Output -match "invalid --quality") "bad-baselines-quality error text changed"
 
 $thread1 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "1")
 Assert ($thread1.RunGeneration -eq 100) "thread=1 run did not complete 100 generations"
@@ -318,6 +340,13 @@ $compareResult = Invoke-Captured $exe @("compare", "--seed", "123", "--seeds", "
 Assert ($compareResult.Output -match "Compare complete") "compare output missing completion"
 Assert ($compareResult.Output -match "best policy") "compare output missing best policy"
 Assert-CompareReport
+
+$baselinesResult = Invoke-Captured $exe @("baselines", "--seed", "123", "--quality", "quick", "--quick")
+Assert ($baselinesResult.Output -match "Baselines complete") "baselines output missing completion"
+Assert ($baselinesResult.Output -match "splitmix64_finalizer") "baselines output missing splitmix"
+Assert ($baselinesResult.Output -match "murmur3_fmix64") "baselines output missing murmur fmix"
+Assert ($baselinesResult.Output -match "fnv1a64_pair") "baselines output missing fnv"
+Assert-BaselinesReport
 
 $badHistory = Invoke-Captured $exe @("history", "--top", "0") @(2)
 Assert ($badHistory.Output -match "invalid --top") "bad-history-top error text changed"
