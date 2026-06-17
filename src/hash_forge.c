@@ -620,8 +620,10 @@ static int compare_candidates(const void *a_ptr, const void *b_ptr) {
     const Candidate *a = (const Candidate *)a_ptr;
     const Candidate *b = (const Candidate *)b_ptr;
     if (a->fail_flags != b->fail_flags) return a->fail_flags < b->fail_flags ? -1 : 1;
+    if (a->deep_score != INT64_MIN || b->deep_score != INT64_MIN) {
+        if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score ? -1 : 1;
+    }
     if (a->quick_score != b->quick_score) return a->quick_score > b->quick_score ? -1 : 1;
-    if (a->deep_score != b->deep_score) return a->deep_score > b->deep_score ? -1 : 1;
     if (a->instruction_count != b->instruction_count) return a->instruction_count < b->instruction_count ? -1 : 1;
     if (a->id != b->id) return a->id < b->id ? -1 : 1;
     return 0;
@@ -1069,6 +1071,55 @@ static int run_generation_self_tests(void) {
     return 1;
 }
 
+static int run_selection_self_tests(void) {
+    Candidate a;
+    Candidate b;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.fail_flags = FAIL_COLLISION;
+    b.fail_flags = 0;
+    a.quick_score = 1000000;
+    b.quick_score = -1000000;
+    a.deep_score = 1000000;
+    b.deep_score = -1000000;
+    a.instruction_count = b.instruction_count = 8;
+    a.id = 1;
+    b.id = 2;
+    if (!self_check(compare_candidates(&a, &b) > 0, "selection prioritizes fail flags")) return 0;
+
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    a.quick_score = 1000;
+    b.quick_score = 10;
+    a.deep_score = 100;
+    b.deep_score = 200;
+    a.instruction_count = b.instruction_count = 8;
+    a.id = 1;
+    b.id = 2;
+    if (!self_check(compare_candidates(&a, &b) > 0, "selection prioritizes deep score")) return 0;
+
+    a.deep_score = INT64_MIN;
+    b.deep_score = -1;
+    a.quick_score = 1000000;
+    b.quick_score = -1000000;
+    if (!self_check(compare_candidates(&a, &b) > 0, "selection prefers available deep score")) return 0;
+
+    a.deep_score = INT64_MIN;
+    b.deep_score = INT64_MIN;
+    a.quick_score = 100;
+    b.quick_score = 200;
+    if (!self_check(compare_candidates(&a, &b) > 0, "selection falls back to quick score")) return 0;
+
+    a.quick_score = b.quick_score = 100;
+    a.instruction_count = 10;
+    b.instruction_count = 8;
+    if (!self_check(compare_candidates(&a, &b) > 0, "selection prefers shorter programs")) return 0;
+
+    printf("selection tests: pass\n");
+    return 1;
+}
+
 static void score_candidate_range(ScoreTask *task) {
     for (uint32_t i = task->start; i < task->end; i++) {
         Candidate *candidate = &task->candidates[i];
@@ -1327,6 +1378,7 @@ static int command_self_test(void) {
     if (!run_vm_self_tests()) return 1;
     if (!run_calibration_self_tests()) return 1;
     if (!run_generation_self_tests()) return 1;
+    if (!run_selection_self_tests()) return 1;
     printf("self-test: pass\n");
     return 0;
 }
