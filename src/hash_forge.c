@@ -894,6 +894,55 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
         print_instruction(c, &candidate->instructions[i], 1);
     }
     fprintf(c, "\n    return hash;\n}\n");
+    fprintf(c, "\n#ifdef HASH_FORGE_BEST_TEST_MAIN\n");
+    fprintf(c, "#include <stdio.h>\n\n");
+    fprintf(c, "typedef struct hf_test_vector {\n");
+    fprintf(c, "    uint64_t key;\n");
+    fprintf(c, "    uint64_t seed;\n");
+    fprintf(c, "    uint64_t expected;\n");
+    fprintf(c, "} hf_test_vector;\n\n");
+    fprintf(c, "int main(void) {\n");
+    fprintf(c, "    static const hf_test_vector vectors[] = {\n");
+    uint64_t vector_keys[] = {
+        0ull,
+        1ull,
+        0x0123456789abcdefull,
+        0xffffffffffffffffull,
+        0x9e3779b97f4a7c15ull,
+        0x0000000100000000ull,
+        0x8000000000000000ull,
+        0x55aa55aa55aa55aaull
+    };
+    uint64_t vector_seeds[] = {
+        0ull,
+        1ull,
+        0xfedcba9876543210ull,
+        0x0123456789abcdefull,
+        0xd1b54a32d192ed03ull,
+        0x00000000ffffffffull,
+        0x7fffffffffffffffull,
+        0xaa55aa55aa55aa55ull
+    };
+    for (uint32_t i = 0; i < sizeof(vector_keys) / sizeof(vector_keys[0]); i++) {
+        uint64_t expected = eval_candidate(candidate, vector_keys[i], vector_seeds[i]);
+        fprintf(c, "        { UINT64_C(0x%llx), UINT64_C(0x%llx), UINT64_C(0x%llx) }%s\n",
+                (unsigned long long)vector_keys[i],
+                (unsigned long long)vector_seeds[i],
+                (unsigned long long)expected,
+                i + 1 == sizeof(vector_keys) / sizeof(vector_keys[0]) ? "" : ",");
+    }
+    fprintf(c, "    };\n");
+    fprintf(c, "    for (unsigned i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {\n");
+    fprintf(c, "        uint64_t got = hash_forge_best(vectors[i].key, vectors[i].seed);\n");
+    fprintf(c, "        if (got != vectors[i].expected) {\n");
+    fprintf(c, "            printf(\"vector %%u failed: got 0x%%llx expected 0x%%llx\\n\", i, (unsigned long long)got, (unsigned long long)vectors[i].expected);\n");
+    fprintf(c, "            return 1;\n");
+    fprintf(c, "        }\n");
+    fprintf(c, "    }\n");
+    fprintf(c, "    puts(\"hash_forge_best vectors: pass\");\n");
+    fprintf(c, "    return 0;\n");
+    fprintf(c, "}\n");
+    fprintf(c, "#endif\n");
     fclose(c);
 
     FILE *txt = fopen("out/best.txt", "wb");

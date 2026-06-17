@@ -87,6 +87,9 @@ out\bench.md
 ```
 
 `out\best.c` is standalone C containing the exported winner.
+Define `HASH_FORGE_BEST_TEST_MAIN` when compiling it to build a tiny vector
+self-test that verifies the exported C still matches the VM outputs used at
+export time.
 `out\report.md` is the full human-readable run report, including run settings,
 stop reason, scores, decoded fail flags, and the best candidate instruction
 listing. It also records the best candidate operator histogram, baseline

@@ -137,6 +137,14 @@ function Compile-BestC {
     if ($LASTEXITCODE -ne 0) {
         Fail "out\best.c did not compile"
     }
+    $checkExe = Join-Path $root "build\best_check.exe"
+    $cmd = "`"$devCmd`" -arch=x64 >nul && cl /nologo /TC /std:c11 /O2 /DHASH_FORGE_BEST_TEST_MAIN `"$bestCPath`" /Fe:`"$checkExe`""
+    cmd.exe /c $cmd
+    if ($LASTEXITCODE -ne 0) {
+        Fail "out\best.c test executable did not compile"
+    }
+    $result = Invoke-Captured $checkExe @()
+    Assert ($result.Output -match "vectors: pass") "out\best.c vector test did not pass"
 }
 
 function Assert-BenchReport([string[]]$expectedThreadTexts) {
