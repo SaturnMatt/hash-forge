@@ -9,6 +9,7 @@ $reportPath = Join-Path $root "out\report.md"
 $benchPath = Join-Path $root "out\bench.md"
 $bestCPath = Join-Path $root "out\best.c"
 $latestReportPath = Join-Path $root "out\latest_report_path.txt"
+$historyPath = Join-Path $root "out\history.csv"
 
 function Fail($message) {
     throw "TEST FAILED: $message"
@@ -98,6 +99,7 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "baseline_mixer") "report missing baseline mixer comparison"
     Assert ($report -match "bad_xor_only") "report missing bad xor comparison"
     Assert ($report -match [regex]::Escape("out/runs/*.md")) "report missing archived report reference"
+    Assert ($report -match [regex]::Escape("out/history.csv")) "report missing history CSV reference"
     Assert ($report -match "VM instruction listing") "report missing instruction listing"
     Assert ($report -match [regex]::Escape("out/best.c")) "report missing best.c reference"
     Assert (Test-Path $latestReportPath) "missing out\latest_report_path.txt"
@@ -105,6 +107,10 @@ function Assert-ReportContains($summary) {
     Assert ($archiveRelative -match '^out/runs/.+\.md$') "latest report path has unexpected shape: $archiveRelative"
     $archiveFull = Join-Path $root $archiveRelative
     Assert (Test-Path $archiveFull) "latest archived report does not exist: $archiveRelative"
+    Assert (Test-Path $historyPath) "missing out\history.csv"
+    $history = Get-Content $historyPath
+    Assert ($history[0] -match "unix_time,seed,run_generation") "history CSV missing expected header"
+    Assert ($history.Count -ge 2) "history CSV missing run rows"
 }
 
 function Invoke-RunAndReadSummary([string[]]$arguments) {

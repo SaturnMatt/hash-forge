@@ -81,6 +81,7 @@ out\best.txt
 out\report.md
 out\runs\*.md
 out\latest_report_path.txt
+out\history.csv
 out\summary.txt
 out\bench.md
 ```
@@ -93,6 +94,8 @@ comparison scores, plus quick, deep, and total candidate hash functions
 evaluated during the run.
 `out\runs\*.md` stores archived per-run copies of completed reports, while
 `out\latest_report_path.txt` points to the latest archived report.
+`out\history.csv` is a compact append-only index of completed runs for quick
+comparison across seeds, qualities, thread counts, scores, and candidate ids.
 
 `bench` measures quick and deep candidate scoring throughput for one or more
 thread counts and writes `out\bench.md`. Benchmark rates are machine-local

@@ -861,6 +861,7 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- `out/report.md`: full human-readable run report\n");
     fprintf(md, "- `out/runs/*.md`: archived per-run reports\n");
     fprintf(md, "- `out/latest_report_path.txt`: path to the latest archived report\n");
+    fprintf(md, "- `out/history.csv`: compact append-only run history\n");
     fprintf(md, "- `out/summary.txt`: terse run summary\n\n");
 
     fprintf(md, "## Interpretation note\n\n");
@@ -942,6 +943,36 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
         fclose(summary);
     }
+
+    int history_exists = 0;
+    FILE *history_read = fopen("out/history.csv", "rb");
+    if (history_read) {
+        history_exists = 1;
+        fclose(history_read);
+    }
+    FILE *history = fopen("out/history.csv", "ab");
+    if (history) {
+        if (!history_exists) {
+            fprintf(history, "unix_time,seed,run_generation,elapsed_seconds,stop_reason,quality,threads,best_id,candidate_generation,instruction_count,quick_score,deep_score,flags,total_candidates\n");
+        }
+        fprintf(history, "%lld,%llu,%llu,%.3f,%s,%s,%u,%llx,%u,%u,%lld,%lld,0x%x,%llu\n",
+                (long long)time(NULL),
+                (unsigned long long)options->seed,
+                (unsigned long long)report->run_generation,
+                report->elapsed_seconds,
+                report->stop_reason,
+                quality_name(options->quality),
+                report->threads,
+                (unsigned long long)candidate->id,
+                candidate->generation,
+                candidate->instruction_count,
+                (long long)candidate->quick_score,
+                (long long)candidate->deep_score,
+                candidate->fail_flags,
+                (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
+        fclose(history);
+    }
+
     ensure_out_runs_dir();
     char archive_path[256];
     unsigned long long elapsed_ms = (unsigned long long)(report->elapsed_seconds * 1000.0 + 0.5);
