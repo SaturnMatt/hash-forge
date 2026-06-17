@@ -57,7 +57,7 @@ function Invoke-Captured($file, [string[]]$arguments, [int[]]$allowedExitCodes =
 function Read-RunSummary {
     Assert (Test-Path $summaryPath) "missing out\summary.txt"
     $line = Get-Content $summaryPath | Select-Object -Last 1
-    $pattern = 'id=(\d+) generation=(\d+) run_generation=(\d+) quick=(-?\d+) deep=(-?\d+) flags=0x([0-9a-fA-F]+) elapsed_seconds=([0-9.]+) stop_reason=(.*?) threads=(\d+) quick_candidates=(\d+) deep_candidates=(\d+) total_candidates=(\d+)'
+    $pattern = 'id=(\d+) generation=(\d+) run_generation=(\d+) quick=(-?\d+) deep=(-?\d+) flags=0x([0-9a-fA-F]+) elapsed_seconds=([0-9.]+) stop_reason=(.*?) quality=(\w+) threads=(\d+) quick_candidates=(\d+) deep_candidates=(\d+) total_candidates=(\d+)'
     $match = [regex]::Match($line, $pattern)
     Assert $match.Success "summary line did not match expected format: $line"
     [pscustomobject]@{
@@ -69,10 +69,11 @@ function Read-RunSummary {
         Flags = $match.Groups[6].Value
         ElapsedSeconds = [double]$match.Groups[7].Value
         StopReason = $match.Groups[8].Value
-        Threads = [uint32]$match.Groups[9].Value
-        QuickCandidates = [uint64]$match.Groups[10].Value
-        DeepCandidates = [uint64]$match.Groups[11].Value
-        TotalCandidates = [uint64]$match.Groups[12].Value
+        Quality = $match.Groups[9].Value
+        Threads = [uint32]$match.Groups[10].Value
+        QuickCandidates = [uint64]$match.Groups[11].Value
+        DeepCandidates = [uint64]$match.Groups[12].Value
+        TotalCandidates = [uint64]$match.Groups[13].Value
     }
 }
 
@@ -80,6 +81,7 @@ function Assert-ReportContains($summary) {
     Assert (Test-Path $reportPath) "missing out\report.md"
     $report = Get-Content $reportPath -Raw
     Assert ($report -match [regex]::Escape("- Stop reason: ``$($summary.StopReason)``")) "report missing stop reason"
+    Assert ($report -match [regex]::Escape("- Quality: ``$($summary.Quality)``")) "report missing quality"
     Assert ($report -match [regex]::Escape("- Scoring threads: ``$($summary.Threads)``")) "report missing thread count"
     Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
@@ -145,6 +147,8 @@ $badSeconds = Invoke-Captured $exe @("run", "--seed", "123", "--seconds", "0") @
 Assert ($badSeconds.Output -match "invalid --seconds") "zero-seconds error text changed"
 $badThreads = Invoke-Captured $exe @("run", "--seed", "123", "--threads", "0") @(2)
 Assert ($badThreads.Output -match "invalid --threads") "zero-threads error text changed"
+$badQuality = Invoke-Captured $exe @("run", "--seed", "123", "--quality", "maximum") @(2)
+Assert ($badQuality.Output -match "invalid --quality") "bad-quality error text changed"
 $badBench = Invoke-Captured $exe @("bench") @(2)
 Assert ($badBench.Output -match "bench requires --seconds") "missing bench seconds error text changed"
 
@@ -179,6 +183,11 @@ $autoThreadSummary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--gener
 Assert ($autoThreadSummary.Threads -ge 1) "auto thread count below 1"
 Assert ($autoThreadSummary.Threads -le 32) "auto thread count above cap"
 Assert ($autoThreadSummary.RunGeneration -eq 5) "auto-thread run did not complete 5 generations"
+
+$deepQualitySummary = Invoke-RunAndReadSummary @("run", "--seed", "789", "--generations", "5", "--threads", "2", "--quality", "deep")
+Assert ($deepQualitySummary.Quality -eq "deep") "deep quality run reported $($deepQualitySummary.Quality)"
+Assert ($deepQualitySummary.RunGeneration -eq 5) "deep quality run did not complete 5 generations"
+Assert ($deepQualitySummary.DeepCandidates -ge 17) "deep quality run did not deep-score expected candidates"
 
 $timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"

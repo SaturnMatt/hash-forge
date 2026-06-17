@@ -276,6 +276,7 @@ hash-forge run --seed 123 --seconds 60
 hash-forge run --seed 123 --generations 1000 --seconds 60
 hash-forge run --seed 123 --seconds 60 --threads 8
 hash-forge run --seed 123 --seconds 60 --threads auto
+hash-forge run --seed 123 --seconds 60 --quality deep
 hash-forge bench --seconds 2 --threads 1,2,4,8,16,32
 hash-forge export-best
 ```
@@ -289,6 +290,8 @@ Worker threads and per-thread scratch buffers are created once at run start and
 reused for the whole run.
 `--threads auto` runs a tiny quick-scoring warmup on the generated population and
 selects the fastest observed worker count for that run.
+`--quality quick|normal|deep` controls score iteration counts, deep-score cadence,
+and deep-score leader count. `normal` is the default.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.
@@ -369,8 +372,8 @@ project, run self-test and support tests, assert CLI error output, compare
 seeded generation-limited runs across single-threaded and threaded scoring,
 stress worker counts including default and over-cap values, verify report and
 summary contents, check auto-thread selection, check time-limited run contracts,
-verify benchmark output and `out/bench.md`, and compile `out/best.c` as
-standalone C.
+check quality modes, verify benchmark output and `out/bench.md`, and compile
+`out/best.c` as standalone C.
 
 `scripts/smoke.ps1` should remain a convenient entry point to the strict suite
 so the familiar smoke command verifies outputs, not just process exit codes.

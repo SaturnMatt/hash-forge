@@ -53,6 +53,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads 8
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
+.\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32
 .\build\hash-forge.exe export-best
 ```
@@ -67,6 +68,8 @@ crossover lane from survivor pairs, and injects fresh random immigrants to
 preserve diversity. On completion it writes:
 Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
+Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candidate
+checks. `normal` is the default.
 
 ```txt
 out\best.c
@@ -98,8 +101,8 @@ expanded `self-test`, runs support-module tests, checks CLI error handling,
 compares deterministic 100-generation runs across `--threads 1` and
 `--threads 4`, stress-checks worker counts including the default and over-cap
 values, verifies `--threads auto`, verifies `out/report.md` and
-`out/summary.txt`, checks time-limited run contracts, verifies `bench` plus
-`out/bench.md`, and compiles `out/best.c` independently.
+`out/summary.txt`, checks quality modes, checks time-limited run contracts,
+verifies `bench` plus `out/bench.md`, and compiles `out/best.c` independently.
 
 `smoke.ps1` is a compatibility entry point that runs the same strict suite.
 

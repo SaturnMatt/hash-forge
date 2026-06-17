@@ -54,6 +54,12 @@ typedef enum OperandKind {
     OPERAND_CONST
 } OperandKind;
 
+typedef enum QualityMode {
+    QUALITY_QUICK,
+    QUALITY_NORMAL,
+    QUALITY_DEEP
+} QualityMode;
+
 typedef struct Rng {
     uint64_t state;
 } Rng;
@@ -97,6 +103,7 @@ typedef struct RunOptions {
     uint64_t generations;
     uint64_t seconds;
     uint32_t threads;
+    QualityMode quality;
     int have_seed;
     int have_seconds;
     int have_threads;
@@ -138,6 +145,7 @@ typedef struct ScoreTask {
     uint32_t end;
     uint64_t seed;
     int deep;
+    QualityMode quality;
     ScoreScratch *scratch;
 } ScoreTask;
 
@@ -237,6 +245,33 @@ static const char *op_name(uint8_t op) {
     case OP_ROTR: return "ROTR";
     default: return "?";
     }
+}
+
+static const char *quality_name(QualityMode quality) {
+    switch (quality) {
+    case QUALITY_QUICK: return "quick";
+    case QUALITY_DEEP: return "deep";
+    case QUALITY_NORMAL:
+    default: return "normal";
+    }
+}
+
+static int score_iterations_for_quality(QualityMode quality, int deep) {
+    if (quality == QUALITY_QUICK) return deep ? 64 : 8;
+    if (quality == QUALITY_DEEP) return deep ? 256 : 32;
+    return deep ? 128 : 16;
+}
+
+static uint32_t deep_every_for_quality(QualityMode quality) {
+    if (quality == QUALITY_QUICK) return 50;
+    if (quality == QUALITY_DEEP) return 10;
+    return DEEP_EVERY;
+}
+
+static uint32_t deep_top_n_for_quality(QualityMode quality) {
+    if (quality == QUALITY_QUICK) return 4;
+    if (quality == QUALITY_DEEP) return 16;
+    return DEEP_TOP_N;
 }
 
 static uint64_t operand_value(const Instruction *ins, const uint64_t r[REG_COUNT]) {
@@ -564,8 +599,8 @@ static int64_t score_avalanche(const Candidate *candidate, ScoreScratch *scratch
     return score;
 }
 
-static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep) {
-    const int iterations = deep ? 128 : 16;
+static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
+    const int iterations = score_iterations_for_quality(quality, deep);
     ScoreResult result = { 0, 0, 0 };
     if (!writes_hash(candidate)) {
         result.fail_flags |= FAIL_NO_HASH;
@@ -662,6 +697,7 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "- Actual generations completed: `%llu`\n", (unsigned long long)report->run_generation);
     fprintf(md, "- Elapsed seconds: `%.3f`\n", report->elapsed_seconds);
     fprintf(md, "- Stop reason: `%s`\n", report->stop_reason);
+    fprintf(md, "- Quality: `%s`\n", quality_name(options->quality));
     fprintf(md, "- Scoring threads: `%u`\n\n", report->threads);
 
     fprintf(md, "## Evaluation totals\n\n");
@@ -676,8 +712,8 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
-    fprintf(md, "- Deep score cadence: every `%u` generations\n", DEEP_EVERY);
-    fprintf(md, "- Deep score top N: `%u`\n", DEEP_TOP_N);
+    fprintf(md, "- Deep score cadence: every `%u` generations\n", deep_every_for_quality(options->quality));
+    fprintf(md, "- Deep score top N: `%u`\n", deep_top_n_for_quality(options->quality));
     fprintf(md, "- Instruction count range: `%u..%u`\n\n", MIN_PROGRAM_LEN, MAX_PROGRAM_LEN);
 
     fprintf(md, "## Best candidate\n\n");
@@ -750,6 +786,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "generation: %u\n", candidate->generation);
     fprintf(txt, "run_generation: %llu\n", (unsigned long long)report->run_generation);
     fprintf(txt, "seed: %llu\n", (unsigned long long)options->seed);
+    fprintf(txt, "quality: %s\n", quality_name(options->quality));
     fprintf(txt, "quick_score: %lld\n", (long long)candidate->quick_score);
     fprintf(txt, "deep_score: %lld\n", (long long)candidate->deep_score);
     fprintf(txt, "fail_flags: 0x%x\n", candidate->fail_flags);
@@ -769,11 +806,11 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
-                candidate->fail_flags, report->elapsed_seconds, report->stop_reason, report->threads,
+                candidate->fail_flags, report->elapsed_seconds, report->stop_reason, quality_name(options->quality), report->threads,
                 (unsigned long long)report->quick_candidates_evaluated,
                 (unsigned long long)report->deep_candidates_evaluated,
                 (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
@@ -949,7 +986,7 @@ static int run_calibration_self_tests(void) {
 
     Candidate baseline;
     make_reasonable_baseline(&baseline);
-    ScoreResult baseline_score = score_candidate(&baseline, scratch, 1234, 1);
+    ScoreResult baseline_score = score_candidate(&baseline, scratch, 1234, 1, QUALITY_NORMAL);
     printf("baseline_mixer score=%lld flags=0x%x\n", (long long)baseline_score.score, baseline_score.fail_flags);
 
     if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_NO_HASH)) == 0,
@@ -968,7 +1005,7 @@ static int run_calibration_self_tests(void) {
     for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         Candidate bad;
         cases[i].maker(&bad);
-        ScoreResult bad_score = score_candidate(&bad, scratch, 1234, 1);
+        ScoreResult bad_score = score_candidate(&bad, scratch, 1234, 1, QUALITY_NORMAL);
         printf("%s score=%lld flags=0x%x\n", cases[i].name, (long long)bad_score.score, bad_score.fail_flags);
         if (!self_check((bad_score.fail_flags & cases[i].expected_flags) == cases[i].expected_flags,
                         "bad hash expected flags")) {
@@ -1035,7 +1072,7 @@ static int run_generation_self_tests(void) {
 static void score_candidate_range(ScoreTask *task) {
     for (uint32_t i = task->start; i < task->end; i++) {
         Candidate *candidate = &task->candidates[i];
-        ScoreResult score = score_candidate(candidate, task->scratch, task->seed, task->deep);
+        ScoreResult score = score_candidate(candidate, task->scratch, task->seed, task->deep, task->quality);
         if (task->deep) {
             candidate->deep_score = score.score;
             candidate->fail_flags |= score.fail_flags;
@@ -1135,7 +1172,7 @@ static int score_pool_init(ScorePool *pool, uint32_t requested_threads, uint32_t
     return 1;
 }
 
-static int score_pool_score(ScorePool *pool, Candidate *candidates, uint32_t candidate_count, uint64_t seed, int deep) {
+static int score_pool_score(ScorePool *pool, Candidate *candidates, uint32_t candidate_count, uint64_t seed, int deep, QualityMode quality) {
     uint32_t active_threads = clamp_thread_count(pool->thread_count, candidate_count);
     if (active_threads == 1) {
         ScoreTask *task = &pool->workers[0].task;
@@ -1144,6 +1181,7 @@ static int score_pool_score(ScorePool *pool, Candidate *candidates, uint32_t can
         task->end = candidate_count;
         task->seed = seed;
         task->deep = deep;
+        task->quality = quality;
         task->scratch = &pool->scratches[0];
         score_candidate_range(task);
         return 1;
@@ -1159,6 +1197,7 @@ static int score_pool_score(ScorePool *pool, Candidate *candidates, uint32_t can
         task->end = (candidate_count * (t + 1)) / active_threads;
         task->seed = seed;
         task->deep = deep;
+        task->quality = quality;
         task->scratch = &pool->scratches[t];
         ResetEvent(worker->done_event);
         done_events[t] = worker->done_event;
@@ -1173,6 +1212,7 @@ static int score_pool_score(ScorePool *pool, Candidate *candidates, uint32_t can
     task->end = candidate_count;
     task->seed = seed;
     task->deep = deep;
+    task->quality = quality;
     task->scratch = &pool->scratches[0];
     score_candidate_range(task);
     return 1;
@@ -1206,6 +1246,7 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
     printf("  %sseconds%s      ", c_dim(), c_reset());
     if (options->have_seconds) printf("%llu\n", (unsigned long long)options->seconds);
     else printf("unlimited\n");
+    printf("  %squality%s      %s\n", c_dim(), c_reset(), quality_name(options->quality));
     printf("  %sthreads%s      %u scoring worker%s%s\n",
            c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s",
            options->auto_threads ? " (auto)" : "");
@@ -1262,11 +1303,12 @@ static void print_progress_line(const RunOptions *options, uint64_t generation, 
            c_reset());
 }
 
-static void print_final_report(const Candidate *candidate, const RunReport *report, int exported) {
+static void print_final_report(const Candidate *candidate, const RunOptions *options, const RunReport *report, int exported) {
     printf("\n%s%sRun complete%s\n", c_bold(), c_green(), c_reset());
     printf("  %sstop reason%s        %s\n", c_dim(), c_reset(), report->stop_reason);
     printf("  %selapsed%s            %.3fs\n", c_dim(), c_reset(), report->elapsed_seconds);
     printf("  %sgenerations%s        %llu\n", c_dim(), c_reset(), (unsigned long long)report->run_generation);
+    printf("  %squality%s            %s\n", c_dim(), c_reset(), quality_name(options->quality));
     printf("  %sthreads%s            %u scoring worker%s\n", c_dim(), c_reset(), report->threads, report->threads == 1 ? "" : "s");
     printf("  %squick evals%s        %llu\n", c_dim(), c_reset(), (unsigned long long)report->quick_candidates_evaluated);
     printf("  %sdeep evals%s         %llu\n", c_dim(), c_reset(), (unsigned long long)report->deep_candidates_evaluated);
@@ -1314,7 +1356,7 @@ static uint32_t choose_auto_thread_count(Candidate *population, uint64_t seed) {
         double start = wall_seconds_now();
         double now = start;
         do {
-            if (!score_pool_score(&pool, population, POPULATION_SIZE, mix_seed(seed, choices[i], 77), 0)) {
+            if (!score_pool_score(&pool, population, POPULATION_SIZE, mix_seed(seed, choices[i], 77), 0, QUALITY_QUICK)) {
                 score_pool_destroy(&pool);
                 break;
             }
@@ -1359,6 +1401,8 @@ static int command_run(const RunOptions *options) {
     uint32_t score_threads = options->auto_threads
         ? choose_auto_thread_count(population, options->seed)
         : clamp_thread_count(options->threads, POPULATION_SIZE);
+    uint32_t deep_every = deep_every_for_quality(options->quality);
+    uint32_t deep_top_n = deep_top_n_for_quality(options->quality);
     ScorePool score_pool;
     double last_status_elapsed = -1.0;
     if (!score_pool_init(&score_pool, score_threads, POPULATION_SIZE)) {
@@ -1376,7 +1420,7 @@ static int command_run(const RunOptions *options) {
            !generation_limit_reached(options, generation) &&
            !seconds_limit_reached(options, start_clock)) {
         generation++;
-        if (!score_pool_score(&score_pool, population, POPULATION_SIZE, options->seed, 0)) {
+        if (!score_pool_score(&score_pool, population, POPULATION_SIZE, options->seed, 0, options->quality)) {
             fprintf(stderr, "failed to score population with %u thread(s)\n", score_threads);
             score_pool_destroy(&score_pool);
             free(population);
@@ -1386,16 +1430,16 @@ static int command_run(const RunOptions *options) {
         quick_candidates_evaluated += POPULATION_SIZE;
         qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
 
-        int deep_generation = generation % DEEP_EVERY == 0 || generation == 1 || generation_limit_reached(options, generation);
+        int deep_generation = generation % deep_every == 0 || generation == 1 || generation_limit_reached(options, generation);
         if (deep_generation) {
-            if (!score_pool_score(&score_pool, population, DEEP_TOP_N, options->seed, 1)) {
+            if (!score_pool_score(&score_pool, population, deep_top_n, options->seed, 1, options->quality)) {
                 fprintf(stderr, "failed to deep-score candidates with %u thread(s)\n", score_threads);
                 score_pool_destroy(&score_pool);
                 free(population);
                 free(next);
                 return 1;
             }
-            deep_candidates_evaluated += DEEP_TOP_N;
+            deep_candidates_evaluated += deep_top_n;
             qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
         }
 
@@ -1446,7 +1490,7 @@ static int command_run(const RunOptions *options) {
         next = tmp;
     }
 
-    if (!score_pool_score(&score_pool, &best_seen, 1, options->seed, 1)) {
+    if (!score_pool_score(&score_pool, &best_seen, 1, options->seed, 1, options->quality)) {
         fprintf(stderr, "failed to score final best candidate\n");
         score_pool_destroy(&score_pool);
         free(population);
@@ -1466,7 +1510,7 @@ static int command_run(const RunOptions *options) {
     };
 
     int exported = export_best(&best_seen, options, &report);
-    print_final_report(&best_seen, &report, exported);
+    print_final_report(&best_seen, options, &report, exported);
 
     free(population);
     free(next);
@@ -1527,7 +1571,7 @@ static int run_bench_phase(ScorePool *pool, Candidate *candidates, uint32_t cand
     *evaluated = 0;
 
     do {
-        if (!score_pool_score(pool, candidates, candidate_count, seed, deep)) {
+        if (!score_pool_score(pool, candidates, candidate_count, seed, deep, QUALITY_NORMAL)) {
             return 0;
         }
         *evaluated += candidate_count;
@@ -1650,13 +1694,14 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>]\n", program);
     printf("  %s export-best\n", program);
 }
 
 static int parse_run_options(int argc, char **argv, RunOptions *options) {
     memset(options, 0, sizeof(*options));
+    options->quality = QUALITY_NORMAL;
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             if (!parse_u64(argv[++i], &options->seed)) {
@@ -1690,6 +1735,18 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             }
             options->threads = clamp_thread_count(threads, POPULATION_SIZE);
             options->have_threads = 1;
+        } else if (strcmp(argv[i], "--quality") == 0 && i + 1 < argc) {
+            const char *quality = argv[++i];
+            if (strcmp(quality, "quick") == 0) {
+                options->quality = QUALITY_QUICK;
+            } else if (strcmp(quality, "normal") == 0) {
+                options->quality = QUALITY_NORMAL;
+            } else if (strcmp(quality, "deep") == 0) {
+                options->quality = QUALITY_DEEP;
+            } else {
+                fprintf(stderr, "invalid --quality value\n");
+                return 0;
+            }
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;
