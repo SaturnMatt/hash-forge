@@ -194,6 +194,10 @@ insert instruction, if below max length
 remove instruction, if above min length
 ```
 
+Opcode generation may be lightly biased toward useful mixing operations such as
+XOR, MUL, and rotates, but every VM opcode must remain reachable and covered by
+self-test invariants.
+
 ## Test Suite
 
 The tests are inspired by hash64's coverage style, but implemented fresh.

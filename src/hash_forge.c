@@ -349,8 +349,22 @@ static uint64_t random_constant(Rng *rng) {
     return splitmix64_next(rng) | 1ull;
 }
 
+static uint8_t random_opcode(Rng *rng) {
+    static const uint8_t weighted_ops[] = {
+        OP_MOV,
+        OP_ADD, OP_ADD,
+        OP_MUL, OP_MUL,
+        OP_XOR, OP_XOR, OP_XOR,
+        OP_SHL,
+        OP_SHR,
+        OP_ROTL, OP_ROTL,
+        OP_ROTR, OP_ROTR
+    };
+    return weighted_ops[rng_range(rng, (uint32_t)(sizeof(weighted_ops) / sizeof(weighted_ops[0])))];
+}
+
 static void random_instruction(Instruction *ins, Rng *rng, int force_hash_bias) {
-    ins->op = (uint8_t)rng_range(rng, OP_COUNT);
+    ins->op = random_opcode(rng);
     ins->dst = (uint8_t)(force_hash_bias ? 2 : rng_range(rng, REG_COUNT));
     ins->operand_kind = (uint8_t)rng_range(rng, 2);
     ins->operand_reg = (uint8_t)rng_range(rng, REG_COUNT);
@@ -409,7 +423,7 @@ static void mutate_candidate(Candidate *child, const Candidate *parent, Rng *rng
         } else {
             Instruction *ins = &child->instructions[rng_range(rng, child->instruction_count)];
             switch (rng_range(rng, 5)) {
-            case 0: ins->op = (uint8_t)rng_range(rng, OP_COUNT); break;
+            case 0: ins->op = random_opcode(rng); break;
             case 1: ins->dst = (uint8_t)rng_range(rng, REG_COUNT); break;
             case 2:
                 ins->operand_kind = (uint8_t)rng_range(rng, 2);
@@ -1076,6 +1090,8 @@ static int run_calibration_self_tests(void) {
 static int run_generation_self_tests(void) {
     Rng a_rng = { 0x123456789abcdef0ull };
     Rng b_rng = { 0x123456789abcdef0ull };
+    uint32_t op_seen[OP_COUNT];
+    memset(op_seen, 0, sizeof(op_seen));
 
     for (uint32_t i = 0; i < 128; i++) {
         Candidate a;
@@ -1113,6 +1129,16 @@ static int run_generation_self_tests(void) {
         if (!self_check(cross_a.id == cross_b.id && cross_a.instruction_count == cross_b.instruction_count &&
                         memcmp(cross_a.instructions, cross_b.instructions, cross_a.instruction_count * sizeof(cross_a.instructions[0])) == 0,
                         "crossover candidate determinism")) return 0;
+    }
+
+    Rng op_rng = { 0x55aa55aa55aa55aaull };
+    for (uint32_t i = 0; i < 512; i++) {
+        Instruction ins;
+        random_instruction(&ins, &op_rng, 0);
+        if (ins.op < OP_COUNT) op_seen[ins.op]++;
+    }
+    for (uint32_t i = 0; i < OP_COUNT; i++) {
+        if (!self_check(op_seen[i] > 0, "weighted opcode sampler reaches every op")) return 0;
     }
 
     printf("generation tests: pass\n");

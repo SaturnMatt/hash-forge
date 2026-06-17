@@ -66,6 +66,8 @@ once at run start and reused for the whole run. Each generation keeps the top
 survivors, mutates most of the remaining population, recombines a small
 crossover lane from survivor pairs, and injects fresh random immigrants to
 preserve diversity. On completion it writes:
+Opcode generation is lightly biased toward mixing-heavy operations such as
+`XOR`, `MUL`, and rotates while keeping every VM operation reachable.
 Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
 Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candidate
