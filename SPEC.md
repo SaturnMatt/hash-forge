@@ -326,7 +326,8 @@ not hash quality scores.
 
 `history --top <n>` reads `out/history.csv`, ranks completed runs by failure
 severity, deep score, quick score, total candidates evaluated, and recency,
-prints a compact leaderboard, and writes `out/history.md`.
+prints a compact leaderboard, and writes `out/history.md` with total candidate
+counts and decoded flag names.
 
 ## Output And Persistence
 

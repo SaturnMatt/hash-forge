@@ -111,7 +111,7 @@ evaluated during the run.
 comparison across seeds, qualities, thread counts, scores, and candidate ids.
 `history --top <n>` reads that index, ranks the strongest historical runs by
 failure severity and score, prints a compact leaderboard, and writes
-`out\history.md`.
+`out\history.md` with total candidate counts and decoded flag names.
 
 `bench` measures quick and deep candidate scoring throughput for one or more
 thread counts and quality modes, then writes `out\bench.md`. Benchmark rates

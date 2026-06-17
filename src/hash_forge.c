@@ -2243,14 +2243,17 @@ static int compare_history_rows(const void *a_ptr, const void *b_ptr) {
 
 static void print_history_row(FILE *out, uint32_t rank, const HistoryRow *row, int markdown) {
     if (markdown) {
-        fprintf(out, "| %u | %s | %u | %llu | %lld | %lld | `0x%x` | `%llx` | %llu | %.3f |\n",
+        fprintf(out, "| %u | %s | %u | %llu | %llu | %lld | %lld | `0x%x` | ",
                 rank,
                 row->quality,
                 row->threads,
                 (unsigned long long)row->run_generation,
+                (unsigned long long)row->total_candidates,
                 (long long)row->deep_score,
                 (long long)row->quick_score,
-                row->flags,
+                row->flags);
+        print_fail_flags(out, row->flags);
+        fprintf(out, " | `%llx` | %llu | %.3f |\n",
                 (unsigned long long)row->best_id,
                 (unsigned long long)row->seed,
                 row->elapsed_seconds);
@@ -2281,8 +2284,8 @@ static int write_history_report(const HistoryRow *rows, uint32_t row_count, uint
     fprintf(md, "# hash-forge history\n\n");
     fprintf(md, "- Rows read: `%u`\n", row_count);
     fprintf(md, "- Top rows shown: `%u`\n\n", limit);
-    fprintf(md, "| rank | quality | threads | generations | deep | quick | flags | best id | seed | elapsed |\n");
-    fprintf(md, "|---:|---|---:|---:|---:|---:|---|---|---:|---:|\n");
+    fprintf(md, "| rank | quality | threads | generations | total candidates | deep | quick | flags | flag names | best id | seed | elapsed |\n");
+    fprintf(md, "|---:|---|---:|---:|---:|---:|---:|---|---|---|---:|---:|\n");
     for (uint32_t i = 0; i < limit; i++) {
         print_history_row(md, i + 1, &rows[i], 1);
     }
