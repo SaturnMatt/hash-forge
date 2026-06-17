@@ -702,6 +702,15 @@ static void print_fail_flags(FILE *out, uint32_t flags) {
     if (flags & FAIL_NO_HASH) { fprintf(out, "%sNO_HASH", wrote ? ", " : ""); wrote = 1; }
 }
 
+static void count_ops(const Candidate *candidate, uint32_t counts[OP_COUNT]) {
+    memset(counts, 0, OP_COUNT * sizeof(counts[0]));
+    for (uint32_t i = 0; i < candidate->instruction_count; i++) {
+        if (candidate->instructions[i].op < OP_COUNT) {
+            counts[candidate->instructions[i].op]++;
+        }
+    }
+}
+
 static int write_markdown_report(const Candidate *candidate, const RunOptions *options, const RunReport *report) {
     FILE *md = fopen("out/report.md", "wb");
     if (!md) {
@@ -750,6 +759,16 @@ static int write_markdown_report(const Candidate *candidate, const RunOptions *o
     fprintf(md, "- Fail flags: `0x%x` (", candidate->fail_flags);
     print_fail_flags(md, candidate->fail_flags);
     fprintf(md, ")\n\n");
+
+    uint32_t op_counts[OP_COUNT];
+    count_ops(candidate, op_counts);
+    fprintf(md, "## Operator histogram\n\n");
+    fprintf(md, "| op | count |\n");
+    fprintf(md, "|---|---:|\n");
+    for (uint32_t i = 0; i < OP_COUNT; i++) {
+        fprintf(md, "| %s | %u |\n", op_name((uint8_t)i), op_counts[i]);
+    }
+    fprintf(md, "\n");
 
     fprintf(md, "## VM instruction listing\n\n");
     fprintf(md, "```txt\n");
@@ -820,6 +839,13 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
             (unsigned long long)(report->quick_candidates_evaluated + report->deep_candidates_evaluated));
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
+    uint32_t op_counts[OP_COUNT];
+    count_ops(candidate, op_counts);
+    fprintf(txt, "operator_histogram:\n");
+    for (uint32_t i = 0; i < OP_COUNT; i++) {
+        fprintf(txt, "  %s: %u\n", op_name((uint8_t)i), op_counts[i]);
+    }
+    fprintf(txt, "\n");
     for (uint32_t i = 0; i < candidate->instruction_count; i++) {
         fprintf(txt, "%02u: ", i);
         print_instruction(txt, &candidate->instructions[i], 0);

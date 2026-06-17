@@ -91,6 +91,8 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Quick score") "report missing quick score"
     Assert ($report -match "Final deep score") "report missing deep score"
     Assert ($report -match "Fail flags") "report missing fail flags"
+    Assert ($report -match "Operator histogram") "report missing operator histogram"
+    Assert ($report -match "\| XOR \|") "report missing operator histogram rows"
     Assert ($report -match "VM instruction listing") "report missing instruction listing"
     Assert ($report -match [regex]::Escape("out/best.c")) "report missing best.c reference"
 }
