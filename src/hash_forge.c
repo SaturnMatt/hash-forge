@@ -119,6 +119,8 @@ typedef struct RunOptions {
     int have_seconds;
     int have_threads;
     int auto_threads;
+    int no_starter;
+    int no_refresh;
 } RunOptions;
 
 typedef struct RunReport {
@@ -948,9 +950,9 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
     fprintf(md, "- Crossover children per generation: `%u`\n", CROSSOVER_COUNT);
     fprintf(md, "- Random immigrants per generation: `%u`\n", IMMIGRANT_COUNT);
-    fprintf(md, "- Compact starter candidates: `%u`\n", STARTER_COUNT);
-    fprintf(md, "- Stagnation refresh window: `%u` generations\n", STAGNATION_REFRESH_GENERATIONS);
-    fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", STAGNATION_IMMIGRANT_COUNT);
+    fprintf(md, "- Compact starter candidates: `%u`\n", options->no_starter ? 0u : STARTER_COUNT);
+    fprintf(md, "- Stagnation refresh window: `%u` generations\n", options->no_refresh ? 0u : STAGNATION_REFRESH_GENERATIONS);
+    fprintf(md, "- Stagnation refresh immigrant count: `%u`\n", options->no_refresh ? 0u : STAGNATION_IMMIGRANT_COUNT);
     fprintf(md, "- Scoring threads: `%u`\n", report->threads);
     fprintf(md, "- Deep score cadence: every `%u` generations\n", deep_every_for_quality(options->quality));
     fprintf(md, "- Deep score top N: `%u`\n", deep_top_n_for_quality(options->quality));
@@ -1194,7 +1196,8 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "duplicate_random_replacements: %llu\n", (unsigned long long)report->duplicate_random_replacements);
     fprintf(txt, "stagnation_refreshes: %llu\n", (unsigned long long)report->stagnation_refreshes);
     fprintf(txt, "adaptive_random_immigrants: %llu\n", (unsigned long long)report->adaptive_random_immigrants);
-    fprintf(txt, "starter_candidates: %u\n", STARTER_COUNT);
+    fprintf(txt, "starter_candidates: %u\n", options->no_starter ? 0u : STARTER_COUNT);
+    fprintf(txt, "stagnation_refresh_enabled: %s\n", options->no_refresh ? "no" : "yes");
     fprintf(txt, "threads: %u\n", report->threads);
     fprintf(txt, "instruction_count: %u\n\n", candidate->instruction_count);
     uint32_t op_counts[OP_COUNT];
@@ -1214,7 +1217,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu starter_candidates=%u refresh_enabled=%s\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -1226,7 +1229,9 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)report->duplicate_repairs,
                 (unsigned long long)report->duplicate_random_replacements,
                 (unsigned long long)report->stagnation_refreshes,
-                (unsigned long long)report->adaptive_random_immigrants);
+                (unsigned long long)report->adaptive_random_immigrants,
+                options->no_starter ? 0u : STARTER_COUNT,
+                options->no_refresh ? "no" : "yes");
         fclose(summary);
     }
 
@@ -2027,7 +2032,9 @@ static int command_run(const RunOptions *options) {
     for (uint32_t i = 0; i < POPULATION_SIZE; i++) {
         random_candidate(&population[i], &rng);
     }
-    seed_starter_population(population, &rng);
+    if (!options->no_starter) {
+        seed_starter_population(population, &rng);
+    }
 
     uint64_t generation = 0;
     Candidate best_seen;
@@ -2113,7 +2120,8 @@ static int command_run(const RunOptions *options) {
             if (uniqueness == 2) duplicate_random_replacements++;
         }
         uint32_t immigrant_count = IMMIGRANT_COUNT;
-        if (generation > last_improvement_generation &&
+        if (!options->no_refresh &&
+            generation > last_improvement_generation &&
             generation - last_improvement_generation >= STAGNATION_REFRESH_GENERATIONS) {
             immigrant_count = STAGNATION_IMMIGRANT_COUNT;
             stagnation_refreshes++;
@@ -2529,7 +2537,7 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s history [--top <n>]\n", program);
     printf("  %s export-best\n", program);
@@ -2583,6 +2591,10 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
                 fprintf(stderr, "invalid --quality value\n");
                 return 0;
             }
+        } else if (strcmp(argv[i], "--no-starter") == 0) {
+            options->no_starter = 1;
+        } else if (strcmp(argv[i], "--no-refresh") == 0) {
+            options->no_refresh = 1;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;

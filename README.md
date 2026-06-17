@@ -54,6 +54,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads 8
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
+.\build\hash-forge.exe run --seed 123 --generations 100 --no-starter --no-refresh
 .\build\hash-forge.exe bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 .\build\hash-forge.exe history --top 10
 .\build\hash-forge.exe export-best
@@ -79,6 +80,8 @@ Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
 Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candidate
 checks. `normal` is the default.
+Use `--no-starter` or `--no-refresh` for deterministic A/B runs against the
+compact starter lane or adaptive stagnation refresh.
 
 ```txt
 out\best.c

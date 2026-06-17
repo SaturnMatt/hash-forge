@@ -301,6 +301,7 @@ hash-forge run --seed 123 --generations 1000 --seconds 60
 hash-forge run --seed 123 --seconds 60 --threads 8
 hash-forge run --seed 123 --seconds 60 --threads auto
 hash-forge run --seed 123 --seconds 60 --quality deep
+hash-forge run --seed 123 --generations 100 --no-starter --no-refresh
 hash-forge bench --seconds 2 --threads 1,2,4,8,16,32 --quality normal
 hash-forge history --top 10
 hash-forge export-best
@@ -317,6 +318,8 @@ reused for the whole run.
 selects the fastest observed worker count for that run.
 `--quality quick|normal|deep` controls score iteration counts, deep-score cadence,
 and deep-score leader count. `normal` is the default.
+`--no-starter` and `--no-refresh` disable the compact starter lane and adaptive
+stagnation refresh for deterministic comparison runs.
 
 `self-test` checks intentionally bad hashes and baseline mixers so the test
 suite can prove it rejects obvious failures.

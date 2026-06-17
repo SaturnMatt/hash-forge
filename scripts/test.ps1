@@ -64,6 +64,8 @@ function Read-RunSummary {
     $pattern = 'id=(\d+) generation=(\d+) run_generation=(\d+) quick=(-?\d+) deep=(-?\d+) flags=0x([0-9a-fA-F]+) elapsed_seconds=([0-9.]+) stop_reason=(.*?) quality=(\w+) threads=(\d+) quick_candidates=(\d+) deep_candidates=(\d+) total_candidates=(\d+)'
     $match = [regex]::Match($line, $pattern)
     Assert $match.Success "summary line did not match expected format: $line"
+    $starterMatch = [regex]::Match($line, 'starter_candidates=(\d+)')
+    $refreshMatch = [regex]::Match($line, 'refresh_enabled=(yes|no)')
     [pscustomobject]@{
         Id = $match.Groups[1].Value
         CandidateGeneration = [uint64]$match.Groups[2].Value
@@ -78,6 +80,8 @@ function Read-RunSummary {
         QuickCandidates = [uint64]$match.Groups[11].Value
         DeepCandidates = [uint64]$match.Groups[12].Value
         TotalCandidates = [uint64]$match.Groups[13].Value
+        StarterCandidates = if ($starterMatch.Success) { [uint32]$starterMatch.Groups[1].Value } else { 8 }
+        RefreshEnabled = if ($refreshMatch.Success) { $refreshMatch.Groups[1].Value } else { "yes" }
     }
 }
 
@@ -89,7 +93,7 @@ function Assert-ReportContains($summary) {
     Assert ($report -match [regex]::Escape("- Scoring threads: ``$($summary.Threads)``")) "report missing thread count"
     Assert ($report -match [regex]::Escape("- Crossover children per generation: ``16``")) "report missing crossover count"
     Assert ($report -match [regex]::Escape("- Random immigrants per generation: ``8``")) "report missing immigrant count"
-    Assert ($report -match [regex]::Escape("- Compact starter candidates: ``8``")) "report missing starter count"
+    Assert ($report -match [regex]::Escape("- Compact starter candidates: ``$($summary.StarterCandidates)``")) "report missing starter count"
     Assert ($report -match [regex]::Escape("- Total hash functions evaluated: ``$($summary.TotalCandidates)``")) "report missing total evaluated"
     Assert ($report -match "Diversity telemetry") "report missing diversity telemetry"
     Assert ($report -match "Unique candidates in last scored generation") "report missing unique candidate count"
@@ -260,6 +264,12 @@ $deepQualitySummary = Invoke-RunAndReadSummary @("run", "--seed", "789", "--gene
 Assert ($deepQualitySummary.Quality -eq "deep") "deep quality run reported $($deepQualitySummary.Quality)"
 Assert ($deepQualitySummary.RunGeneration -eq 5) "deep quality run did not complete 5 generations"
 Assert ($deepQualitySummary.DeepCandidates -ge 17) "deep quality run did not deep-score expected candidates"
+
+$toggleSummary = Invoke-RunAndReadSummary @("run", "--seed", "321", "--generations", "5", "--threads", "2", "--no-starter", "--no-refresh")
+Assert ($toggleSummary.RunGeneration -eq 5) "toggle run did not complete 5 generations"
+$toggleReport = Get-Content $reportPath -Raw
+Assert ($toggleReport -match [regex]::Escape("- Compact starter candidates: ``0``")) "toggle report did not disable starter lane"
+Assert ($toggleReport -match [regex]::Escape("- Stagnation refresh window: ``0`` generations")) "toggle report did not disable refresh"
 
 $timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"
