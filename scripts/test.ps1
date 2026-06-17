@@ -173,6 +173,11 @@ Assert ($defaultThreadSummary.Threads -ge 1) "default thread count below 1"
 Assert ($defaultThreadSummary.Threads -le 32) "default thread count above cap"
 Assert ($defaultThreadSummary.RunGeneration -eq 5) "default-thread run did not complete 5 generations"
 
+$autoThreadSummary = Invoke-RunAndReadSummary @("run", "--seed", "456", "--generations", "5", "--threads", "auto")
+Assert ($autoThreadSummary.Threads -ge 1) "auto thread count below 1"
+Assert ($autoThreadSummary.Threads -le 32) "auto thread count above cap"
+Assert ($autoThreadSummary.RunGeneration -eq 5) "auto-thread run did not complete 5 generations"
+
 $timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"
 Assert ($timeSummary.Threads -eq 4) "time-limited run reported wrong thread count"

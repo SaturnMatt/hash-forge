@@ -98,6 +98,7 @@ typedef struct RunOptions {
     int have_seed;
     int have_seconds;
     int have_threads;
+    int auto_threads;
 } RunOptions;
 
 typedef struct RunReport {
@@ -1159,7 +1160,9 @@ static void print_run_header(const RunOptions *options, uint32_t score_threads) 
     printf("  %sseconds%s      ", c_dim(), c_reset());
     if (options->have_seconds) printf("%llu\n", (unsigned long long)options->seconds);
     else printf("unlimited\n");
-    printf("  %sthreads%s      %u scoring worker%s\n", c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s");
+    printf("  %sthreads%s      %u scoring worker%s%s\n",
+           c_dim(), c_reset(), score_threads, score_threads == 1 ? "" : "s",
+           options->auto_threads ? " (auto)" : "");
     printf("  %spopulation%s   %u candidates, %u survivors\n", c_dim(), c_reset(), POPULATION_SIZE, SURVIVOR_COUNT);
     printf("\n%s%6s  %7s  %10s  %10s  %12s  %12s  %8s  %3s  %16s%s\n",
            c_dim(), "gen", "time", "progress", "candidates", "quick", "deep", "flags", "len", "best id", c_reset());
@@ -1239,6 +1242,51 @@ static int command_self_test(void) {
     return 0;
 }
 
+static uint32_t choose_auto_thread_count(Candidate *population, uint64_t seed) {
+    uint32_t raw_choices[] = { 1, 2, 4, 8, 16, 32 };
+    uint32_t choices[sizeof(raw_choices) / sizeof(raw_choices[0])];
+    uint32_t choice_count = 0;
+    uint32_t best_threads = 1;
+    double best_rate = 0.0;
+    const double seconds_per_choice = 0.04;
+
+    for (uint32_t i = 0; i < sizeof(raw_choices) / sizeof(raw_choices[0]); i++) {
+        uint32_t clamped = clamp_thread_count(raw_choices[i], POPULATION_SIZE);
+        if (choice_count == 0 || choices[choice_count - 1] != clamped) {
+            choices[choice_count++] = clamped;
+        }
+    }
+
+    for (uint32_t i = 0; i < choice_count; i++) {
+        ScorePool pool;
+        if (!score_pool_init(&pool, choices[i], POPULATION_SIZE)) {
+            continue;
+        }
+
+        uint64_t evaluated = 0;
+        double start = wall_seconds_now();
+        double now = start;
+        do {
+            if (!score_pool_score(&pool, population, POPULATION_SIZE, mix_seed(seed, choices[i], 77), 0)) {
+                score_pool_destroy(&pool);
+                break;
+            }
+            evaluated += POPULATION_SIZE;
+            now = wall_seconds_now();
+        } while (now - start < seconds_per_choice);
+
+        double elapsed = now - start;
+        double rate = elapsed > 0.0 ? (double)evaluated / elapsed : 0.0;
+        if (rate > best_rate) {
+            best_rate = rate;
+            best_threads = pool.thread_count;
+        }
+        score_pool_destroy(&pool);
+    }
+
+    return best_threads;
+}
+
 static int command_run(const RunOptions *options) {
     Candidate *population = (Candidate *)calloc(POPULATION_SIZE, sizeof(*population));
     Candidate *next = (Candidate *)calloc(POPULATION_SIZE, sizeof(*next));
@@ -1261,7 +1309,9 @@ static int command_run(const RunOptions *options) {
     best_seen.deep_score = INT64_MIN;
     uint64_t quick_candidates_evaluated = 0;
     uint64_t deep_candidates_evaluated = 0;
-    uint32_t score_threads = clamp_thread_count(options->threads, POPULATION_SIZE);
+    uint32_t score_threads = options->auto_threads
+        ? choose_auto_thread_count(population, options->seed)
+        : clamp_thread_count(options->threads, POPULATION_SIZE);
     ScorePool score_pool;
     double last_status_elapsed = -1.0;
     if (!score_pool_init(&score_pool, score_threads, POPULATION_SIZE)) {
@@ -1539,7 +1589,7 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n>]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>]\n", program);
     printf("  %s export-best\n", program);
 }
@@ -1566,7 +1616,14 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             options->have_seconds = 1;
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             uint64_t threads = 0;
-            if (!parse_u64(argv[++i], &threads) || threads == 0) {
+            const char *value = argv[++i];
+            if (strcmp(value, "auto") == 0) {
+                options->threads = 0;
+                options->auto_threads = 1;
+                options->have_threads = 1;
+                continue;
+            }
+            if (!parse_u64(value, &threads) || threads == 0) {
                 fprintf(stderr, "invalid --threads value\n");
                 return 0;
             }
