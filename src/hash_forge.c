@@ -159,7 +159,10 @@ typedef struct RunOptions {
     int no_crossover;
     int no_novelty;
     int have_novelty_lane;
+    int starter_cap_enabled;
     uint32_t novelty_lane;
+    uint32_t starter_cap;
+    uint64_t starter_cap_after;
     uint64_t refresh_window;
     uint32_t refresh_immigrants;
 } RunOptions;
@@ -182,6 +185,13 @@ typedef struct RunReport {
     uint64_t novelty_candidates_admitted;
     uint64_t last_best_novelty_score;
     uint64_t last_avg_novelty_score;
+    uint32_t starter_cap_enabled;
+    uint32_t starter_cap;
+    uint64_t starter_cap_after;
+    uint64_t starter_cap_displacements;
+    uint32_t last_starter_survivors_before_cap;
+    uint32_t last_starter_survivors_after_cap;
+    uint32_t final_winner_starter;
     uint64_t refresh_window;
     uint32_t refresh_immigrants;
     struct ImprovementLog {
@@ -237,6 +247,11 @@ typedef struct PolicyResult {
     uint32_t no_refresh;
     uint32_t no_crossover;
     uint32_t no_novelty;
+    uint32_t starter_cap_enabled;
+    uint32_t starter_cap;
+    uint64_t starter_cap_after;
+    uint64_t starter_cap_displacements;
+    uint32_t final_winner_starter;
     uint32_t novelty_lane;
     uint64_t novelty_candidates_admitted;
     uint64_t last_best_novelty_score;
@@ -1768,6 +1783,15 @@ static int write_markdown_report_to_path(const Candidate *candidate, const RunOp
     fprintf(md, "- Last-generation best novelty score: `%llu`\n", (unsigned long long)report->last_best_novelty_score);
     fprintf(md, "- Last-generation average novelty score: `%llu`\n\n", (unsigned long long)report->last_avg_novelty_score);
 
+    fprintf(md, "## Starter cap telemetry\n\n");
+    fprintf(md, "- Starter cap enabled: `%s`\n", report->starter_cap_enabled ? "yes" : "no");
+    fprintf(md, "- Starter survivor cap: `%u`\n", report->starter_cap);
+    fprintf(md, "- Starter cap after generation: `%llu`\n", (unsigned long long)report->starter_cap_after);
+    fprintf(md, "- Starter cap displacements: `%llu`\n", (unsigned long long)report->starter_cap_displacements);
+    fprintf(md, "- Last starter survivors before cap: `%u`\n", report->last_starter_survivors_before_cap);
+    fprintf(md, "- Last starter survivors after cap: `%u`\n", report->last_starter_survivors_after_cap);
+    fprintf(md, "- Final winner starter-lineage: `%s`\n\n", report->final_winner_starter ? "yes" : "no");
+
     fprintf(md, "## Population settings\n\n");
     fprintf(md, "- Population size: `%u`\n", POPULATION_SIZE);
     fprintf(md, "- Survivor count: `%u`\n", SURVIVOR_COUNT);
@@ -2054,6 +2078,13 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     fprintf(txt, "novelty_candidates_admitted: %llu\n", (unsigned long long)report->novelty_candidates_admitted);
     fprintf(txt, "last_best_novelty_score: %llu\n", (unsigned long long)report->last_best_novelty_score);
     fprintf(txt, "last_avg_novelty_score: %llu\n", (unsigned long long)report->last_avg_novelty_score);
+    fprintf(txt, "starter_cap_enabled: %s\n", report->starter_cap_enabled ? "yes" : "no");
+    fprintf(txt, "starter_cap: %u\n", report->starter_cap);
+    fprintf(txt, "starter_cap_after: %llu\n", (unsigned long long)report->starter_cap_after);
+    fprintf(txt, "starter_cap_displacements: %llu\n", (unsigned long long)report->starter_cap_displacements);
+    fprintf(txt, "last_starter_survivors_before_cap: %u\n", report->last_starter_survivors_before_cap);
+    fprintf(txt, "last_starter_survivors_after_cap: %u\n", report->last_starter_survivors_after_cap);
+    fprintf(txt, "final_winner_starter: %s\n", report->final_winner_starter ? "yes" : "no");
     fprintf(txt, "improvement_count: %llu\n", (unsigned long long)report->improvements.total_count);
     fprintf(txt, "improvement_events_kept: %u\n", report->improvements.count);
     fprintf(txt, "improvement_events_omitted: %llu\n", (unsigned long long)report->improvements.omitted_count);
@@ -2087,7 +2118,7 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
     FILE *summary = fopen("out/summary.txt", "wb");
     if (summary) {
         fprintf(summary, "hash-forge best candidate\n");
-        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu novelty_lane=%u novelty_candidates=%llu last_best_novelty=%llu last_avg_novelty=%llu starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
+        fprintf(summary, "id=%llu generation=%u run_generation=%llu quick=%lld deep=%lld flags=0x%x elapsed_seconds=%.3f stop_reason=%s quality=%s threads=%u quick_candidates=%llu deep_candidates=%llu total_candidates=%llu last_unique=%u duplicate_repairs=%llu duplicate_random_replacements=%llu stagnation_refreshes=%llu adaptive_random_immigrants=%llu novelty_lane=%u novelty_candidates=%llu last_best_novelty=%llu last_avg_novelty=%llu starter_cap_enabled=%s starter_cap=%u starter_cap_after=%llu starter_cap_displacements=%llu last_starter_before_cap=%u last_starter_after_cap=%u final_winner_starter=%s starter_candidates=%u refresh_enabled=%s refresh_window=%llu refresh_immigrants=%u champion_starters=%u source=%s crossover_children=%u improvement_count=%llu last_improvement_generation=%llu last_improvement_elapsed=%.3f\n",
                 (unsigned long long)candidate->id, candidate->generation,
                 (unsigned long long)report->run_generation,
                 (long long)candidate->quick_score, (long long)candidate->deep_score,
@@ -2104,6 +2135,13 @@ static int export_best(const Candidate *candidate, const RunOptions *options, co
                 (unsigned long long)report->novelty_candidates_admitted,
                 (unsigned long long)report->last_best_novelty_score,
                 (unsigned long long)report->last_avg_novelty_score,
+                report->starter_cap_enabled ? "yes" : "no",
+                report->starter_cap,
+                (unsigned long long)report->starter_cap_after,
+                (unsigned long long)report->starter_cap_displacements,
+                report->last_starter_survivors_before_cap,
+                report->last_starter_survivors_after_cap,
+                report->final_winner_starter ? "yes" : "no",
                 options->no_starter ? 0u : STARTER_COUNT,
                 options->no_refresh ? "no" : "yes",
                 (unsigned long long)report->refresh_window,
@@ -2812,6 +2850,60 @@ static uint32_t novelty_lane_for_options(const RunOptions *options) {
     return options->have_novelty_lane ? options->novelty_lane : DEFAULT_NOVELTY_LANE;
 }
 
+static int candidate_is_starter_lineage(const Candidate *candidate) {
+    return candidate->source == SOURCE_STARTER;
+}
+
+static uint32_t starter_cap_for_options(const RunOptions *options) {
+    if (!options->starter_cap_enabled) return SURVIVOR_COUNT;
+    return options->starter_cap > SURVIVOR_COUNT ? SURVIVOR_COUNT : options->starter_cap;
+}
+
+static uint64_t starter_cap_after_for_options(const RunOptions *options) {
+    return options->starter_cap_enabled ? options->starter_cap_after : 0u;
+}
+
+static uint32_t count_starter_survivors(const Candidate *population) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
+        if (candidate_is_starter_lineage(&population[i])) count++;
+    }
+    return count;
+}
+
+static uint32_t apply_starter_survivor_cap(Candidate *population, uint64_t generation,
+                                           uint32_t cap, uint64_t cap_after,
+                                           uint32_t *before_count, uint32_t *after_count) {
+    *before_count = count_starter_survivors(population);
+    *after_count = *before_count;
+    if (cap >= SURVIVOR_COUNT || generation <= cap_after || *before_count <= cap) {
+        return 0;
+    }
+
+    uint32_t starter_seen = 0;
+    uint32_t displaced = 0;
+    for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
+        if (!candidate_is_starter_lineage(&population[i])) continue;
+        starter_seen++;
+        if (starter_seen <= cap) continue;
+
+        uint32_t replacement = POPULATION_SIZE;
+        for (uint32_t j = SURVIVOR_COUNT; j < POPULATION_SIZE; j++) {
+            if (!candidate_is_starter_lineage(&population[j])) {
+                replacement = j;
+                break;
+            }
+        }
+        if (replacement == POPULATION_SIZE) break;
+        Candidate tmp = population[i];
+        population[i] = population[replacement];
+        population[replacement] = tmp;
+        displaced++;
+    }
+    *after_count = count_starter_survivors(population);
+    return displaced;
+}
+
 static uint64_t refresh_window_for_options(const RunOptions *options) {
     if (options->no_refresh) return 0;
     return options->refresh_window ? options->refresh_window : STAGNATION_REFRESH_GENERATIONS;
@@ -2916,6 +3008,14 @@ static void print_final_report(const Candidate *candidate, const RunOptions *opt
            (unsigned long long)report->novelty_candidates_admitted,
            (unsigned long long)report->last_best_novelty_score,
            (unsigned long long)report->last_avg_novelty_score);
+    printf("  %sstarter cap%s        %s cap %u after %llu (%llu displaced, last %u -> %u)\n",
+           c_dim(), c_reset(),
+           report->starter_cap_enabled ? "enabled" : "disabled",
+           report->starter_cap,
+           (unsigned long long)report->starter_cap_after,
+           (unsigned long long)report->starter_cap_displacements,
+           report->last_starter_survivors_before_cap,
+           report->last_starter_survivors_after_cap);
     printf("  %simprovements%s       %llu", c_dim(), c_reset(),
            (unsigned long long)report->improvements.total_count);
     if (last_improvement) {
@@ -3027,6 +3127,11 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
     uint64_t novelty_candidates_admitted = 0;
     uint64_t last_best_novelty_score = 0;
     uint64_t last_avg_novelty_score = 0;
+    uint32_t starter_cap = starter_cap_for_options(options);
+    uint64_t starter_cap_after = starter_cap_after_for_options(options);
+    uint64_t starter_cap_displacements = 0;
+    uint32_t last_starter_survivors_before_cap = 0;
+    uint32_t last_starter_survivors_after_cap = 0;
     uint64_t last_improvement_generation = 0;
     uint32_t last_unique_candidates = POPULATION_SIZE;
     uint32_t score_threads = options->auto_threads
@@ -3102,6 +3207,10 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
                                 quick_candidates_evaluated, deep_candidates_evaluated);
             last_status_elapsed = now_elapsed;
         }
+
+        starter_cap_displacements += apply_starter_survivor_cap(population, generation, starter_cap, starter_cap_after,
+                                                                 &last_starter_survivors_before_cap,
+                                                                 &last_starter_survivors_after_cap);
 
         for (uint32_t i = 0; i < SURVIVOR_COUNT; i++) {
             next[i] = population[i];
@@ -3236,6 +3345,13 @@ static int run_evolution(const RunOptions *options, int print_status, Candidate 
         novelty_candidates_admitted,
         last_best_novelty_score,
         last_avg_novelty_score,
+        options->starter_cap_enabled ? 1u : 0u,
+        starter_cap,
+        starter_cap_after,
+        starter_cap_displacements,
+        last_starter_survivors_before_cap,
+        last_starter_survivors_after_cap,
+        candidate_is_starter_lineage(&best_seen) ? 1u : 0u,
         refresh_window,
         refresh_immigrants,
         improvements
@@ -3484,9 +3600,9 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
         fprintf(stderr, "failed to open out/policy.csv\n");
         return 0;
     }
-    fprintf(csv, "policy,seed,best_id,source,deep,quick,flags,audit_worst,audit_flags,total_candidates,run_generation,improvement_count,last_improvement_generation,last_unique,refreshes,no_starter,no_refresh,no_crossover,no_novelty,novelty_lane,novelty_candidates,last_best_novelty,refresh_window,refresh_immigrants\n");
+    fprintf(csv, "policy,seed,best_id,source,deep,quick,flags,audit_worst,audit_flags,total_candidates,run_generation,improvement_count,last_improvement_generation,last_unique,refreshes,no_starter,no_refresh,no_crossover,no_novelty,novelty_lane,novelty_candidates,last_best_novelty,starter_cap_enabled,starter_cap,starter_cap_after,starter_cap_displacements,final_winner_starter,refresh_window,refresh_immigrants\n");
     for (uint32_t i = 0; i < result_count; i++) {
-        fprintf(csv, "%s,%llu,%llx,%s,%lld,%lld,0x%x,%lld,0x%x,%llu,%llu,%llu,%llu,%u,%llu,%u,%u,%u,%u,%u,%llu,%llu,%llu,%u\n",
+        fprintf(csv, "%s,%llu,%llx,%s,%lld,%lld,0x%x,%lld,0x%x,%llu,%llu,%llu,%llu,%u,%llu,%u,%u,%u,%u,%u,%llu,%llu,%u,%u,%llu,%llu,%u,%llu,%u\n",
                 results[i].policy,
                 (unsigned long long)results[i].seed,
                 (unsigned long long)results[i].best_id,
@@ -3509,6 +3625,11 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
                 results[i].novelty_lane,
                 (unsigned long long)results[i].novelty_candidates_admitted,
                 (unsigned long long)results[i].last_best_novelty_score,
+                results[i].starter_cap_enabled,
+                results[i].starter_cap,
+                (unsigned long long)results[i].starter_cap_after,
+                (unsigned long long)results[i].starter_cap_displacements,
+                results[i].final_winner_starter,
                 (unsigned long long)results[i].refresh_window,
                 results[i].refresh_immigrants);
     }
@@ -3535,8 +3656,8 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
     fprintf(md, "\n\n");
 
     fprintf(md, "## Policy definitions\n\n");
-    fprintf(md, "| policy | starter | refresh | crossover | novelty lane | refresh window | refresh immigrants |\n");
-    fprintf(md, "|---|---|---|---|---:|---:|---:|\n");
+    fprintf(md, "| policy | starter | refresh | crossover | novelty lane | starter cap | cap after | refresh window | refresh immigrants |\n");
+    fprintf(md, "|---|---|---|---|---:|---:|---:|---:|---:|\n");
     for (uint32_t i = 0; i < summary_count; i++) {
         const PolicyResult *sample = NULL;
         for (uint32_t j = 0; j < result_count; j++) {
@@ -3546,12 +3667,14 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
             }
         }
         if (!sample) continue;
-        fprintf(md, "| %s | %s | %s | %s | %u | %llu | %u |\n",
+        fprintf(md, "| %s | %s | %s | %s | %u | %u | %llu | %llu | %u |\n",
                 summaries[i].policy,
                 sample->no_starter ? "off" : "on",
                 sample->no_refresh ? "off" : "on",
                 sample->no_crossover ? "off" : "on",
                 sample->novelty_lane,
+                sample->starter_cap_enabled ? sample->starter_cap : SURVIVOR_COUNT,
+                (unsigned long long)sample->starter_cap_after,
                 (unsigned long long)sample->refresh_window,
                 sample->refresh_immigrants);
     }
@@ -3579,8 +3702,8 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
     }
 
     fprintf(md, "\n## Trial results\n\n");
-    fprintf(md, "| policy | seed | deep | quick | flags | audit worst | audit flags | candidates | improvements | last improvement gen | novelty admitted | best novelty | refreshes | unique | source | best id |\n");
-    fprintf(md, "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|\n");
+    fprintf(md, "| policy | seed | deep | quick | flags | audit worst | audit flags | candidates | improvements | last improvement gen | novelty admitted | best novelty | starter cap displacements | final starter | refreshes | unique | source | best id |\n");
+    fprintf(md, "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---|---|\n");
     for (uint32_t i = 0; i < result_count; i++) {
         fprintf(md, "| %s | %llu | %lld | %lld | `0x%x` (",
                 results[i].policy,
@@ -3593,12 +3716,14 @@ static int write_policy_outputs(const PolicyOptions *options, const PolicyResult
                 (long long)results[i].audit_worst,
                 results[i].audit_flags);
         print_fail_flags(md, results[i].audit_flags);
-        fprintf(md, ") | %llu | %llu | %llu | %llu | %llu | %llu | %u | %s | `%llx` |\n",
+        fprintf(md, ") | %llu | %llu | %llu | %llu | %llu | %llu | %s | %llu | %u | %s | `%llx` |\n",
                 (unsigned long long)results[i].total_candidates,
                 (unsigned long long)results[i].improvement_count,
                 (unsigned long long)results[i].last_improvement_generation,
                 (unsigned long long)results[i].novelty_candidates_admitted,
                 (unsigned long long)results[i].last_best_novelty_score,
+                (unsigned long long)results[i].starter_cap_displacements,
+                results[i].final_winner_starter ? "yes" : "no",
                 (unsigned long long)results[i].stagnation_refreshes,
                 results[i].last_unique_candidates,
                 candidate_source_name(results[i].source),
@@ -3620,16 +3745,20 @@ static int command_policy(const PolicyOptions *options) {
         int no_crossover;
         int no_novelty;
         uint32_t novelty_lane;
+        int starter_cap_enabled;
+        uint32_t starter_cap;
+        uint64_t starter_cap_after;
         uint64_t refresh_window;
         uint32_t refresh_immigrants;
     } policies[] = {
-        { "default", 0, 0, 0, 0, 0, 0, 0 },
-        { "no-novelty", 0, 0, 0, 1, 0, 0, 0 },
-        { "no-crossover", 0, 0, 1, 0, 0, 0, 0 },
-        { "no-starter", 1, 0, 0, 0, 0, 0, 0 },
-        { "no-refresh", 0, 1, 0, 0, 0, 0, 0 },
-        { "bare", 1, 1, 1, 1, 0, 0, 0 },
-        { "refresh-strong", 0, 0, 0, 0, 0, 20, 96 }
+        { "default", 0, 0, 0, 0, 0, 0, SURVIVOR_COUNT, 0, 0, 0 },
+        { "starter-cap", 0, 0, 0, 0, 0, 1, 8, 10, 0, 0 },
+        { "no-novelty", 0, 0, 0, 1, 0, 0, SURVIVOR_COUNT, 0, 0, 0 },
+        { "no-crossover", 0, 0, 1, 0, 0, 0, SURVIVOR_COUNT, 0, 0, 0 },
+        { "no-starter", 1, 0, 0, 0, 0, 0, SURVIVOR_COUNT, 0, 0, 0 },
+        { "no-refresh", 0, 1, 0, 0, 0, 0, SURVIVOR_COUNT, 0, 0, 0 },
+        { "bare", 1, 1, 1, 1, 0, 0, SURVIVOR_COUNT, 0, 0, 0 },
+        { "refresh-strong", 0, 0, 0, 0, 0, 0, SURVIVOR_COUNT, 0, 20, 96 }
     };
     enum { POLICY_COUNT = sizeof(policies) / sizeof(policies[0]) };
 
@@ -3671,6 +3800,9 @@ static int command_policy(const PolicyOptions *options) {
             run_options.no_novelty = policies[p].no_novelty;
             run_options.novelty_lane = policies[p].novelty_lane;
             run_options.have_novelty_lane = policies[p].no_novelty || policies[p].novelty_lane;
+            run_options.starter_cap_enabled = policies[p].starter_cap_enabled;
+            run_options.starter_cap = policies[p].starter_cap;
+            run_options.starter_cap_after = policies[p].starter_cap_after;
             run_options.no_champions = 1;
             run_options.refresh_window = policies[p].refresh_window;
             run_options.refresh_immigrants = policies[p].refresh_immigrants;
@@ -3712,6 +3844,11 @@ static int command_policy(const PolicyOptions *options) {
             result->novelty_lane = report.novelty_lane;
             result->novelty_candidates_admitted = report.novelty_candidates_admitted;
             result->last_best_novelty_score = report.last_best_novelty_score;
+            result->starter_cap_enabled = report.starter_cap_enabled;
+            result->starter_cap = report.starter_cap;
+            result->starter_cap_after = report.starter_cap_after;
+            result->starter_cap_displacements = report.starter_cap_displacements;
+            result->final_winner_starter = report.final_winner_starter;
             result->refresh_window = report.refresh_window;
             result->refresh_immigrants = report.refresh_window ? report.refresh_immigrants : 0u;
 
@@ -4272,7 +4409,7 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover] [--no-novelty|--novelty-lane <n>]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover] [--no-novelty|--novelty-lane <n>] [--starter-cap <n>] [--starter-cap-after <n>] [--no-starter-cap]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s policy [--seed <u64>] [--seeds <n>|--seed-list <csv>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
@@ -4351,6 +4488,23 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             options->novelty_lane = (uint32_t)novelty_lane;
             options->have_novelty_lane = 1;
             options->no_novelty = novelty_lane == 0;
+        } else if (strcmp(argv[i], "--starter-cap") == 0 && i + 1 < argc) {
+            uint64_t starter_cap = 0;
+            if (!parse_u64(argv[++i], &starter_cap) || starter_cap > SURVIVOR_COUNT) {
+                fprintf(stderr, "invalid --starter-cap value\n");
+                return 0;
+            }
+            options->starter_cap = (uint32_t)starter_cap;
+            options->starter_cap_enabled = 1;
+        } else if (strcmp(argv[i], "--starter-cap-after") == 0 && i + 1 < argc) {
+            if (!parse_u64(argv[++i], &options->starter_cap_after)) {
+                fprintf(stderr, "invalid --starter-cap-after value\n");
+                return 0;
+            }
+        } else if (strcmp(argv[i], "--no-starter-cap") == 0) {
+            options->starter_cap_enabled = 0;
+            options->starter_cap = 0;
+            options->starter_cap_after = 0;
         } else {
             fprintf(stderr, "unknown argument: %s\n", argv[i]);
             return 0;

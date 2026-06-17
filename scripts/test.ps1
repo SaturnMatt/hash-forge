@@ -79,6 +79,9 @@ function Read-RunSummary {
     $crossoverMatch = [regex]::Match($line, 'crossover_children=(\d+)')
     $noveltyLaneMatch = [regex]::Match($line, 'novelty_lane=(\d+)')
     $noveltyCandidatesMatch = [regex]::Match($line, 'novelty_candidates=(\d+)')
+    $starterCapEnabledMatch = [regex]::Match($line, 'starter_cap_enabled=(yes|no)')
+    $starterCapMatch = [regex]::Match($line, 'starter_cap=(\d+)')
+    $starterCapDisplacementsMatch = [regex]::Match($line, 'starter_cap_displacements=(\d+)')
     $improvementMatch = [regex]::Match($line, 'improvement_count=(\d+)')
     $lastImprovementGenerationMatch = [regex]::Match($line, 'last_improvement_generation=(\d+)')
     $lastImprovementElapsedMatch = [regex]::Match($line, 'last_improvement_elapsed=([0-9.]+)')
@@ -103,6 +106,9 @@ function Read-RunSummary {
         CrossoverChildren = if ($crossoverMatch.Success) { [uint32]$crossoverMatch.Groups[1].Value } else { 16 }
         NoveltyLane = if ($noveltyLaneMatch.Success) { [uint32]$noveltyLaneMatch.Groups[1].Value } else { 0 }
         NoveltyCandidates = if ($noveltyCandidatesMatch.Success) { [uint64]$noveltyCandidatesMatch.Groups[1].Value } else { 0 }
+        StarterCapEnabled = if ($starterCapEnabledMatch.Success) { $starterCapEnabledMatch.Groups[1].Value } else { "no" }
+        StarterCap = if ($starterCapMatch.Success) { [uint32]$starterCapMatch.Groups[1].Value } else { 32 }
+        StarterCapDisplacements = if ($starterCapDisplacementsMatch.Success) { [uint64]$starterCapDisplacementsMatch.Groups[1].Value } else { 0 }
         ImprovementCount = if ($improvementMatch.Success) { [uint64]$improvementMatch.Groups[1].Value } else { 0 }
         LastImprovementGeneration = if ($lastImprovementGenerationMatch.Success) { [uint64]$lastImprovementGenerationMatch.Groups[1].Value } else { 0 }
         LastImprovementElapsed = if ($lastImprovementElapsedMatch.Success) { [double]$lastImprovementElapsedMatch.Groups[1].Value } else { 0.0 }
@@ -134,6 +140,9 @@ function Assert-ReportContains($summary) {
     Assert ($report -match "Novelty telemetry") "report missing novelty telemetry"
     Assert ($report -match [regex]::Escape("- Novelty children per generation: ``$($summary.NoveltyLane)``")) "report missing novelty lane"
     Assert ($report -match [regex]::Escape("- Novelty candidates admitted: ``$($summary.NoveltyCandidates)``")) "report missing novelty candidate count"
+    Assert ($report -match "Starter cap telemetry") "report missing starter cap telemetry"
+    Assert ($report -match [regex]::Escape("- Starter cap enabled: ``$($summary.StarterCapEnabled)``")) "report missing starter cap enabled"
+    Assert ($report -match [regex]::Escape("- Starter cap displacements: ``$($summary.StarterCapDisplacements)``")) "report missing starter cap displacement count"
     $hexId = "{0:x}" -f ([uint64]$summary.Id)
     Assert ($report -match [regex]::Escape("- ID: ``$hexId``")) "report missing best id"
     Assert ($report -match "Source ancestry") "report missing source ancestry"
@@ -199,6 +208,8 @@ function Invoke-RunAndReadSummary([string[]]$arguments) {
     Assert ($bestTxt -match "crossover_children") "best.txt missing crossover child count"
     Assert ($bestTxt -match "novelty_lane") "best.txt missing novelty lane"
     Assert ($bestTxt -match "novelty_candidates_admitted") "best.txt missing novelty admitted count"
+    Assert ($bestTxt -match "starter_cap_enabled") "best.txt missing starter cap enabled"
+    Assert ($bestTxt -match "starter_cap_displacements") "best.txt missing starter cap displacements"
     Assert ($bestTxt -match "improvement_count") "best.txt missing improvement count"
     Assert ($bestTxt -match "last_improvement_generation") "best.txt missing last improvement generation"
     Assert ($bestTxt -match "source:") "best.txt missing source"
@@ -270,7 +281,7 @@ function Assert-PolicyReport {
     Assert ($policy -match "Policy definitions") "policy report missing definitions"
     Assert ($policy -match "Policy summary") "policy report missing summary"
     Assert ($policy -match "Trial results") "policy report missing trials"
-    foreach ($name in @("default", "no-novelty", "no-crossover", "no-starter", "no-refresh", "bare", "refresh-strong")) {
+    foreach ($name in @("default", "starter-cap", "no-novelty", "no-crossover", "no-starter", "no-refresh", "bare", "refresh-strong")) {
         Assert ($policy -match $name) "policy report missing $name"
     }
     Assert ($policy -match "clean audits") "policy report missing clean audit counts"
@@ -280,7 +291,8 @@ function Assert-PolicyReport {
     Assert ($csv[0] -match "policy,seed,best_id,source,deep,quick") "policy CSV missing expected header"
     Assert ($policy -match "novelty lane") "policy report missing novelty lane policy column"
     Assert ($policy -match "novelty admitted") "policy report missing novelty admitted trial column"
-    Assert ($csv.Count -ge 8) "policy CSV missing policy rows"
+    Assert ($policy -match "starter cap") "policy report missing starter cap policy column"
+    Assert ($csv.Count -ge 9) "policy CSV missing policy rows"
 }
 
 function Assert-BaselinesReport {
@@ -416,6 +428,12 @@ $noNoveltySummary = Invoke-RunAndReadSummary @("run", "--seed", "654", "--genera
 Assert ($noNoveltySummary.RunGeneration -eq 5) "no-novelty run did not complete 5 generations"
 Assert ($noNoveltySummary.NoveltyLane -eq 0) "no-novelty run reported $($noNoveltySummary.NoveltyLane) novelty children"
 Assert ($noNoveltySummary.NoveltyCandidates -eq 0) "no-novelty run admitted novelty candidates"
+
+$starterCapSummary = Invoke-RunAndReadSummary @("run", "--seed", "654", "--generations", "5", "--threads", "2", "--no-champions", "--starter-cap", "0", "--starter-cap-after", "1")
+Assert ($starterCapSummary.RunGeneration -eq 5) "starter-cap run did not complete 5 generations"
+Assert ($starterCapSummary.StarterCapEnabled -eq "yes") "starter-cap run did not enable cap"
+Assert ($starterCapSummary.StarterCap -eq 0) "starter-cap run reported cap $($starterCapSummary.StarterCap)"
+Assert ($starterCapSummary.StarterCapDisplacements -gt 0) "starter-cap run did not displace starter survivors"
 
 $timeSummary = Invoke-RunAndReadSummary @("run", "--seed", "123", "--seconds", "1", "--threads", "4", "--no-champions")
 Assert ($timeSummary.StopReason -eq "time limit") "time-limited run did not stop by time"

@@ -58,6 +58,7 @@ build\hash-forge.exe
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-champions
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-crossover --no-champions
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-novelty --no-champions
+.\build\hash-forge.exe run --seed 123 --generations 100 --starter-cap 8 --starter-cap-after 10 --no-champions
 .\build\hash-forge.exe compare --seed 123 --seeds 3 --generations 25 --threads 4
 .\build\hash-forge.exe policy --seed 9201 --seeds 5 --generations 1000 --threads 32 --quality deep
 .\build\hash-forge.exe policy --seed-list 9201,9202,9203 --generations 1000 --threads 32 --quality deep
@@ -99,6 +100,9 @@ counts.
 Use `--no-novelty` or `--novelty-lane <n>` for A/B runs against the structural
 novelty lane. The default novelty lane reserves a small slice of each generation
 for children of structurally distinct candidates.
+Use `--starter-cap <n>` with `--starter-cap-after <generations>` to limit how
+many starter-lineage candidates may occupy survivor slots for breeding after a
+warmup period. Raw scores are unchanged; the cap only changes breeding pressure.
 
 ```txt
 out\best.c
@@ -161,8 +165,8 @@ and averages, then writes `out\compare.md`.
 
 `policy` runs a fuller deterministic same-budget policy comparison across the
 same seed list and fixed generation count. It compares default, no-crossover,
-no-novelty, no-starter, no-refresh, bare, and refresh-strong policies with
-champion starters disabled for fairness, then writes `out\policy.md` and
+starter-cap, no-novelty, no-starter, no-refresh, bare, and refresh-strong
+policies with champion starters disabled for fairness, then writes `out\policy.md` and
 `out\policy.csv`.
 
 `baselines` scores established non-cryptographic 64-bit reference mixers with

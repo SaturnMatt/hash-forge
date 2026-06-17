@@ -358,3 +358,121 @@ looks like a real exploration knob worth evaluating with longer policy runs.
 Commit hash:
 
 - `3def400 Add novelty lane`
+
+## Milestone 4: Starter-lineage cap
+
+Status: implemented and verified.
+
+Intended files:
+
+- `src/hash_forge.c`
+- `scripts/test.ps1`
+- `README.md`
+- `SPEC.md`
+- `docs/progress-ultimate-forge.md`
+
+Plan:
+
+- Add an explicit starter survivor cap, disabled by default.
+- Add `--starter-cap <n>`, `--starter-cap-after <generations>`, and
+  `--no-starter-cap` controls.
+- Apply the cap only to survivor slots used for breeding, after scoring and
+  best tracking, so raw scores stay honest.
+- Fill displaced starter survivor slots with the next best non-starter
+  candidates.
+- Report cap settings, before/after starter survivor counts, and displacement
+  totals.
+- Add a `starter-cap` policy so policy mode can compare the cap against default.
+
+Risks:
+
+- Source ancestry currently has one label, so novelty-source descendants of
+  starter candidates are not counted as starter for the cap. This keeps the
+  implementation tiny but should be noted in interpretation.
+- Cap changes breeding pressure but should not mutate raw quick/deep scores.
+- A forced cap of zero must still produce valid exports.
+
+Verification plan:
+
+```txt
+.\build.ps1
+.\scripts\test.ps1
+git diff --check
+.\scripts\smoke.ps1
+```
+
+Experiment plan:
+
+```txt
+.\build\hash-forge.exe policy --seed 9501 --seeds 2 --generations 80 --threads 4 --quality quick
+```
+
+Record starter-cap policy results, displacement telemetry, and whether the cap
+reduces starter survivor dominance without breaking candidate quality.
+
+What changed:
+
+- Added `--starter-cap <n>`, `--starter-cap-after <generations>`, and
+  `--no-starter-cap`.
+- Added starter survivor cap logic that reorders breeding survivor slots after
+  scoring and best tracking, without changing raw quick/deep scores.
+- Added starter-cap telemetry to console output, `out/report.md`, `out/best.txt`,
+  and `out/summary.txt`.
+- Added `starter-cap` to policy mode with cap 8 after generation 10.
+- Added starter-cap columns to `out/policy.md` and `out/policy.csv`.
+- Added strict tests for forced cap zero and displacement telemetry.
+- Updated README and SPEC.
+
+Commands run:
+
+```txt
+.\build.ps1
+.\build\hash-forge.exe run --seed 123 --generations 5 --threads 2 --no-champions --starter-cap 0 --starter-cap-after 1
+.\scripts\test.ps1
+git diff --check
+.\scripts\smoke.ps1
+.\build\hash-forge.exe policy --seed 9501 --seeds 2 --generations 80 --threads 4 --quality quick
+```
+
+Verification result:
+
+- `.\build.ps1`: pass.
+- Forced starter-cap run: pass; cap 0 after generation 1 displaced 26 starter
+  survivor slots in 5 generations and still exported a valid candidate.
+- `.\scripts\test.ps1`: pass.
+- `git diff --check`: pass, with expected CRLF warnings only.
+- `.\scripts\smoke.ps1`: pass.
+
+Experiment result:
+
+```txt
+seed_count=2
+generations=80
+threads=4
+quality=quick
+champion_starters=disabled
+
+policy          wins  clean_winners  clean_audits  avg_deep  best_deep  cap_displacements
+default         0     0              0             1460001   1490266    0
+starter-cap     0     0              0             1451534   1486378    78, 53
+no-novelty      0     0              0             1493201   1504637    0
+no-crossover    0     0              0             1464037   1513289    0
+no-starter      0     0              0             1494335   1503412    0
+no-refresh      0     0              0             1460001   1490266    0
+bare            1     0              0             1518063   1536206    0
+refresh-strong  1     0              0             1446220   1512170    0
+```
+
+Interpretation:
+
+The starter cap is active and measurable: it displaced 78 starter survivor slots
+on seed 9501 and 53 on seed 9502. It reduced starter breeding pressure enough
+that the seed 9502 starter-cap winner had random source ancestry, but it did not
+win this two-seed quick-budget sample. This suggests the cap is useful as a
+policy knob, but cap 8 after generation 10 may be too blunt for default use.
+Current source labels are single-valued, so novelty-source descendants of starter
+candidates are not counted as starter-lineage by this cap.
+
+Commit hash:
+
+- Pending until the milestone commit is created.
