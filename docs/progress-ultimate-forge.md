@@ -357,4 +357,4 @@ looks like a real exploration knob worth evaluating with longer policy runs.
 
 Commit hash:
 
-- Pending until the milestone commit is created.
+- `3def400 Add novelty lane`
