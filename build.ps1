@@ -13,6 +13,8 @@ $arraySrc = Join-Path $root "dynamic_array\dynamic_array_tiny.c"
 $arrayTestSrc = Join-Path $root "dynamic_array\test_dynamic_array.c"
 $buildDir = Join-Path $root "build"
 $exe = Join-Path $buildDir "hash-forge.exe"
+$objDir = ($buildDir -replace "\\", "/") + "/"
+$mainObj = Join-Path $buildDir "hash_forge.obj"
 $tableTestExe = Join-Path $buildDir "hash_table_tests.exe"
 $arrayTestExe = Join-Path $buildDir "dynamic_array_tests.exe"
 
@@ -41,7 +43,7 @@ if ($Config -eq "Release") {
     $linkFlags = ""
 }
 
-$cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags `"$src`" /Fe:`"$exe`" $linkFlags"
+$cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /Fo`"$mainObj`" `"$src`" /Fe:`"$exe`" $linkFlags"
 cmd.exe /c $cmd
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
@@ -49,7 +51,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ((Test-Path $tableSrc) -and (Test-Path $tableTestSrc)) {
     $include = Join-Path $root "hash_table"
-    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$tableSrc`" `"$tableTestSrc`" /Fe:`"$tableTestExe`" $linkFlags"
+    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" /Fo`"$objDir`" `"$tableSrc`" `"$tableTestSrc`" /Fe:`"$tableTestExe`" $linkFlags"
     cmd.exe /c $cmd
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
@@ -59,7 +61,7 @@ if ((Test-Path $tableSrc) -and (Test-Path $tableTestSrc)) {
 
 if ((Test-Path $arraySrc) -and (Test-Path $arrayTestSrc)) {
     $include = Join-Path $root "dynamic_array"
-    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" `"$arraySrc`" `"$arrayTestSrc`" /Fe:`"$arrayTestExe`" $linkFlags"
+    $cmd = "`"$devCmd`" -arch=x64 >nul && cl $clFlags /I `"$include`" /Fo`"$objDir`" `"$arraySrc`" `"$arrayTestSrc`" /Fe:`"$arrayTestExe`" $linkFlags"
     cmd.exe /c $cmd
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
