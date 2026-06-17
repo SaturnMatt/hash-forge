@@ -160,6 +160,16 @@ function Assert-BenchReport([string[]]$expectedThreadTexts) {
     }
 }
 
+$lockRoot = Join-Path $root "build"
+New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+$lockDir = Join-Path $lockRoot "test.lock"
+try {
+    New-Item -ItemType Directory -Path $lockDir -ErrorAction Stop | Out-Null
+} catch {
+    Fail "another hash-forge test run is already active"
+}
+
+try {
 Set-Location $root
 & (Join-Path $root "build.ps1")
 
@@ -229,3 +239,6 @@ Assert-BenchReport @("| 1 | 1 |", "| 2 | 2 |", "| 32 | 32 |")
 Compile-BestC
 
 Write-Host "hash-forge strict tests: pass"
+} finally {
+    Remove-Item -LiteralPath $lockDir -Recurse -Force -ErrorAction SilentlyContinue
+}
