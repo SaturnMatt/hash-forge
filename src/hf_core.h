@@ -44,6 +44,10 @@
 #define CHAMPION_FINGERPRINT_SEED 123ull
 #define MAX_IMPROVEMENT_EVENTS 512
 #define BASELINE_CASE_COUNT 3
+#define DEFAULT_PANEL_RATE_MS 150
+#define MIN_PANEL_RATE_MS 25
+#define MAX_PANEL_RATE_MS 5000
+#define PANEL_SOURCE_COUNT 4
 
 #define FAIL_ZERO       0x01u
 #define FAIL_COLLISION  0x02u
@@ -168,9 +172,13 @@ typedef struct RunOptions {
     int no_champions;
     int no_crossover;
     int no_novelty;
+    int panel;
+    int no_color;
     int have_novelty_lane;
+    int have_panel_rate_ms;
     int starter_cap_enabled;
     uint32_t novelty_lane;
+    uint32_t panel_rate_ms;
     uint32_t starter_cap;
     uint64_t starter_cap_after;
     uint64_t refresh_window;
@@ -228,7 +236,32 @@ typedef struct RunReport {
         uint64_t total_count;
         uint64_t omitted_count;
     } improvements;
+    uint32_t final_source_counts[PANEL_SOURCE_COUNT];
 } RunReport;
+
+typedef struct PanelSnapshot {
+    uint64_t generation;
+    uint64_t quick_candidates_evaluated;
+    uint64_t deep_candidates_evaluated;
+    double elapsed_seconds;
+    const char *stop_reason;
+    uint32_t threads;
+    uint32_t last_unique_candidates;
+    uint32_t source_counts[PANEL_SOURCE_COUNT];
+    char score_sparkline[49];
+    uint64_t novelty_candidates_admitted;
+    uint64_t last_best_novelty_score;
+    uint64_t last_avg_novelty_score;
+    int has_last_improvement;
+    uint64_t last_improvement_generation;
+    double last_improvement_elapsed;
+    uint64_t last_improvement_candidate_id;
+    int64_t last_improvement_quick_score;
+    int64_t last_improvement_deep_score;
+    uint32_t last_improvement_flags;
+    uint8_t last_improvement_source;
+    uint8_t last_improvement_reason;
+} PanelSnapshot;
 
 typedef struct PolicyOptions {
     uint64_t seed;
@@ -458,6 +491,8 @@ const char *c_bold(void);
 const char *c_cyan(void);
 const char *c_dim(void);
 const char *c_green(void);
+const char *c_magenta(void);
+const char *c_red(void);
 const char *c_reset(void);
 const char *c_yellow(void);
 const char *candidate_source_name(uint8_t source);
@@ -493,6 +528,8 @@ int command_artifacts(const ArtifactOptions *options);
 int command_prune(const PruneOptions *options);
 int command_db(const DbOptions *options);
 int command_policy(const PolicyOptions *options);
+void panel_render(const RunOptions *options, const Candidate *candidate, const PanelSnapshot *snapshot);
+void panel_render_final(const RunOptions *options, const Candidate *candidate, const RunReport *report);
 int candidate_is_valid(const Candidate *candidate);
 int ensure_out_dir(void);
 int export_best(const Candidate *candidate, const RunOptions *options, const RunReport *report);

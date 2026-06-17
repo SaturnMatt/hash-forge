@@ -433,6 +433,8 @@ $badThreads = Invoke-Captured $exe @("run", "--seed", "123", "--threads", "0") @
 Assert ($badThreads.Output -match "invalid --threads") "zero-threads error text changed"
 $badQuality = Invoke-Captured $exe @("run", "--seed", "123", "--quality", "maximum") @(2)
 Assert ($badQuality.Output -match "invalid --quality") "bad-quality error text changed"
+$badPanelRate = Invoke-Captured $exe @("run", "--seed", "123", "--panel-rate-ms", "0") @(2)
+Assert ($badPanelRate.Output -match "invalid --panel-rate-ms") "bad-panel-rate error text changed"
 $badBench = Invoke-Captured $exe @("bench") @(2)
 Assert ($badBench.Output -match "bench requires --seconds") "missing bench seconds error text changed"
 $badCompare = Invoke-Captured $exe @("compare", "--seeds", "0") @(2)
@@ -449,6 +451,19 @@ Assert ($thread1.RunGeneration -eq 100) "thread=1 run did not complete 100 gener
 Assert ($thread1.StopReason -eq "generation limit") "thread=1 run stop reason was not generation limit"
 Assert ($thread1.Threads -eq 1) "thread=1 summary reported $($thread1.Threads)"
 Assert ($thread1.ChampionStarters -eq 0) "thread=1 no-champions run loaded champions"
+
+$plainPanelRef = Invoke-RunAndReadSummary @("run", "--seed", "13579", "--generations", "10", "--threads", "1", "--no-champions")
+$panelResult = Invoke-Captured $exe @("run", "--seed", "13579", "--generations", "10", "--threads", "1", "--no-champions", "--panel", "--no-color", "--panel-rate-ms", "25")
+Assert ($panelResult.Output -match "HASH-FORGE LIVE PANEL") "panel output missing live panel title"
+Assert ($panelResult.Output -match "population lanes") "panel output missing population lanes"
+Assert ($panelResult.Output -match "improvement signal") "panel output missing improvement signal"
+Assert (-not $panelResult.Output.Contains([string][char]27)) "panel --no-color emitted ANSI escape sequences"
+$panelSummary = Read-RunSummary
+Assert ($panelSummary.RunGeneration -eq 10) "panel run did not complete 10 generations"
+Assert ($plainPanelRef.Id -eq $panelSummary.Id) "panel changed deterministic best id"
+Assert ($plainPanelRef.Quick -eq $panelSummary.Quick) "panel changed deterministic quick score"
+Assert ($plainPanelRef.Deep -eq $panelSummary.Deep) "panel changed deterministic deep score"
+Assert ($plainPanelRef.TotalCandidates -eq $panelSummary.TotalCandidates) "panel changed deterministic total evaluations"
 
 $thread4 = Invoke-RunAndReadSummary @("run", "--seed", "123", "--generations", "100", "--threads", "4", "--no-champions")
 Assert ($thread4.RunGeneration -eq 100) "thread=4 run did not complete 100 generations"

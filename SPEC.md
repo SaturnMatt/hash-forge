@@ -320,6 +320,8 @@ hash-forge run --seed 123 --generations 1000 --seconds 60
 hash-forge run --seed 123 --seconds 60 --threads 8
 hash-forge run --seed 123 --seconds 60 --threads auto
 hash-forge run --seed 123 --seconds 60 --quality deep
+hash-forge run --seed 123 --seconds 60 --panel
+hash-forge run --seed 123 --generations 1000 --panel --panel-rate-ms 100
 hash-forge run --seed 123 --generations 100 --no-starter --no-refresh
 hash-forge run --seed 123 --generations 100 --no-champions
 hash-forge run --seed 123 --generations 100 --no-crossover --no-champions
@@ -355,6 +357,14 @@ reused for the whole run.
 selects the fastest observed worker count for that run.
 `--quality quick|normal|deep` controls score iteration counts, deep-score cadence,
 and deep-score leader count. `normal` is the default.
+`--panel` replaces the rolling status table with an optional live terminal HUD.
+The panel is a restrained dark lab-style display of real run telemetry: seed,
+elapsed time, limits, generation, total candidates evaluated, evaluation rate,
+thread count, best id, quick/deep scores, decoded test health, population/source
+mix, score sparkline, novelty telemetry, recent improvement, and compact opcode
+DNA. `--panel-rate-ms <n>` controls redraw cadence. `--no-color` disables ANSI
+color and escape sequences. The renderer must not alter seeded evolution results
+or add disk I/O to the hot loop.
 `--no-starter` and `--no-refresh` disable the compact starter lane and adaptive
 stagnation refresh for deterministic comparison runs.
 `--no-champions` disables loading saved custom champion hashes as starter
@@ -543,7 +553,8 @@ Acceptance criteria:
 project, run self-test and support tests, assert CLI error output, compare
 seeded generation-limited runs across single-threaded and threaded scoring,
 stress worker counts including default and over-cap values, verify report and
-summary contents, check auto-thread selection, check time-limited run contracts,
+summary contents, check auto-thread selection, check panel parsing, no-color
+output, and same-seed panel/plain determinism, check time-limited run contracts,
 check quality modes, verify benchmark output and `out/bench.md`, verify history
 leaderboard output and `out/history.md`, verify policy comparison output and
 `out/compare.md`, verify established-hash baseline output and

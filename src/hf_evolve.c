@@ -634,6 +634,86 @@ static void print_progress_line(const RunOptions *options, uint64_t generation, 
            c_reset());
 }
 
+static void collect_source_counts(const Candidate *population, uint32_t count, uint32_t out[PANEL_SOURCE_COUNT]) {
+    memset(out, 0, PANEL_SOURCE_COUNT * sizeof(out[0]));
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t source = population[i].source;
+        if (source >= PANEL_SOURCE_COUNT) source = SOURCE_RANDOM;
+        out[source]++;
+    }
+}
+
+static void build_improvement_sparkline(const struct ImprovementLog *log, char out[49]) {
+    static const char levels[] = ".:-=+*#%@";
+    uint32_t count = log->count;
+    uint32_t samples = count < 48 ? count : 48;
+    int64_t min_score = INT64_MAX;
+    int64_t max_score = INT64_MIN;
+    if (samples == 0) {
+        out[0] = '\0';
+        return;
+    }
+    for (uint32_t i = 0; i < samples; i++) {
+        uint32_t index = samples == 1 ? 0 : (uint32_t)(((uint64_t)i * (count - 1)) / (samples - 1));
+        const struct ImprovementEvent *event = &log->events[index];
+        int64_t score = event->quick_score;
+        if (score < min_score) min_score = score;
+        if (score > max_score) max_score = score;
+    }
+    for (uint32_t i = 0; i < samples; i++) {
+        uint32_t index = samples == 1 ? 0 : (uint32_t)(((uint64_t)i * (count - 1)) / (samples - 1));
+        const struct ImprovementEvent *event = &log->events[index];
+        int64_t score = event->quick_score;
+        uint32_t level = 8;
+        if (max_score > min_score) {
+            level = (uint32_t)(((score - min_score) * 8) / (max_score - min_score));
+            if (level > 8) level = 8;
+        }
+        out[i] = levels[level];
+    }
+    out[samples] = '\0';
+}
+
+static void fill_panel_snapshot(PanelSnapshot *snapshot, const RunOptions *options,
+                                uint64_t generation, double elapsed_seconds,
+                                uint64_t quick_evals, uint64_t deep_evals,
+                                uint32_t threads, uint32_t last_unique_candidates,
+                                const uint32_t source_counts[PANEL_SOURCE_COUNT],
+                                uint64_t novelty_candidates_admitted,
+                                uint64_t last_best_novelty_score,
+                                uint64_t last_avg_novelty_score,
+                                const struct ImprovementLog *improvements) {
+    const struct ImprovementEvent *last = last_improvement_event(improvements);
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->generation = generation;
+    snapshot->quick_candidates_evaluated = quick_evals;
+    snapshot->deep_candidates_evaluated = deep_evals;
+    snapshot->elapsed_seconds = elapsed_seconds;
+    snapshot->stop_reason = (generation_limit_reached(options, generation) ||
+                             (options->have_seconds && elapsed_seconds >= (double)options->seconds) ||
+                             g_stop_requested)
+        ? stop_reason_for(options, generation, elapsed_seconds)
+        : "running";
+    snapshot->threads = threads;
+    snapshot->last_unique_candidates = last_unique_candidates;
+    memcpy(snapshot->source_counts, source_counts, PANEL_SOURCE_COUNT * sizeof(source_counts[0]));
+    build_improvement_sparkline(improvements, snapshot->score_sparkline);
+    snapshot->novelty_candidates_admitted = novelty_candidates_admitted;
+    snapshot->last_best_novelty_score = last_best_novelty_score;
+    snapshot->last_avg_novelty_score = last_avg_novelty_score;
+    if (last) {
+        snapshot->has_last_improvement = 1;
+        snapshot->last_improvement_generation = last->run_generation;
+        snapshot->last_improvement_elapsed = last->elapsed_seconds;
+        snapshot->last_improvement_candidate_id = last->candidate_id;
+        snapshot->last_improvement_quick_score = last->quick_score;
+        snapshot->last_improvement_deep_score = last->deep_score;
+        snapshot->last_improvement_flags = last->fail_flags;
+        snapshot->last_improvement_source = last->source;
+        snapshot->last_improvement_reason = last->reason;
+    }
+}
+
 static void print_final_report(const Candidate *candidate, const RunOptions *options, const RunReport *report, int exported) {
     const struct ImprovementEvent *last_improvement = last_improvement_event(&report->improvements);
     printf("\n%s%sRun complete%s\n", c_bold(), c_green(), c_reset());
@@ -814,8 +894,11 @@ int run_evolution(const RunOptions *options, int print_status, Candidate *best_o
     uint32_t refresh_immigrants = refresh_immigrants_for_options(options);
     uint32_t deep_every = deep_every_for_quality(options->quality);
     uint32_t deep_top_n = deep_top_n_for_quality(options->quality);
+    uint32_t last_source_counts[PANEL_SOURCE_COUNT];
     ScorePool score_pool;
     double last_status_elapsed = -1.0;
+    double status_interval = options->panel ? (double)options->panel_rate_ms / 1000.0 : 0.25;
+    memset(last_source_counts, 0, sizeof(last_source_counts));
     if (!score_pool_init(&score_pool, score_threads, POPULATION_SIZE)) {
         fprintf(stderr, "failed to start scoring worker pool\n");
         free(population);
@@ -825,7 +908,7 @@ int run_evolution(const RunOptions *options, int print_status, Candidate *best_o
     score_threads = score_pool.thread_count;
     double start_seconds = wall_seconds_now();
 
-    if (print_status) {
+    if (print_status && !options->panel) {
         print_run_header(options, score_threads);
     }
 
@@ -843,6 +926,7 @@ int run_evolution(const RunOptions *options, int print_status, Candidate *best_o
         quick_candidates_evaluated += POPULATION_SIZE;
         qsort(population, POPULATION_SIZE, sizeof(population[0]), compare_candidates);
         last_unique_candidates = count_unique_candidate_ids(population, POPULATION_SIZE);
+        collect_source_counts(population, POPULATION_SIZE, last_source_counts);
 
         int deep_generation = generation % deep_every == 0 || generation == 1 || generation_limit_reached(options, generation);
         if (deep_generation) {
@@ -876,9 +960,19 @@ int run_evolution(const RunOptions *options, int print_status, Candidate *best_o
             generation_limit_reached(options, generation) ||
             seconds_limit_reached(options, start_seconds) ||
             last_status_elapsed < 0.0 ||
-            now_elapsed - last_status_elapsed >= 0.25)) {
-            print_progress_line(options, generation, now_elapsed, &population[0],
-                                quick_candidates_evaluated, deep_candidates_evaluated);
+            now_elapsed - last_status_elapsed >= status_interval)) {
+            if (options->panel) {
+                PanelSnapshot snapshot;
+                fill_panel_snapshot(&snapshot, options, generation, now_elapsed,
+                                    quick_candidates_evaluated, deep_candidates_evaluated,
+                                    score_threads, last_unique_candidates, last_source_counts,
+                                    novelty_candidates_admitted, last_best_novelty_score,
+                                    last_avg_novelty_score, &improvements);
+                panel_render(options, &population[0], &snapshot);
+            } else {
+                print_progress_line(options, generation, now_elapsed, &population[0],
+                                    quick_candidates_evaluated, deep_candidates_evaluated);
+            }
             last_status_elapsed = now_elapsed;
         }
 
@@ -1047,6 +1141,7 @@ int run_evolution(const RunOptions *options, int print_status, Candidate *best_o
         export_selection,
         improvements
     };
+    memcpy(report.final_source_counts, last_source_counts, sizeof(report.final_source_counts));
 
     if (best_out) *best_out = export_best_seen;
     if (report_out) *report_out = report;
@@ -1064,6 +1159,9 @@ int command_run(const RunOptions *options) {
         return 1;
     }
     int exported = export_best(&best_seen, options, &report);
+    if (options->panel) {
+        panel_render_final(options, &best_seen, &report);
+    }
     print_final_report(&best_seen, options, &report, exported);
     return exported ? 0 : 1;
 }

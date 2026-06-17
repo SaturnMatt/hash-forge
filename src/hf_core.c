@@ -10,7 +10,8 @@ const char *c_dim(void) { return g_color_enabled ? "\x1b[2m" : ""; }
 const char *c_bold(void) { return g_color_enabled ? "\x1b[1m" : ""; }
 const char *c_green(void) { return g_color_enabled ? "\x1b[32m" : ""; }
 const char *c_yellow(void) { return g_color_enabled ? "\x1b[33m" : ""; }
-static const char *c_red(void) { return g_color_enabled ? "\x1b[31m" : ""; }
+const char *c_red(void) { return g_color_enabled ? "\x1b[31m" : ""; }
+const char *c_magenta(void) { return g_color_enabled ? "\x1b[35m" : ""; }
 const char *c_cyan(void) { return g_color_enabled ? "\x1b[36m" : ""; }
 
 void init_console_output(void) {

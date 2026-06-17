@@ -54,6 +54,7 @@ src\hf_core.c     console, timing, names, PRNG, and small shared helpers
 src\hf_vm.c       VM execution, candidate ids, generation, mutation, crossover
 src\hf_score.c    hash-quality scoring and candidate ordering helpers
 src\hf_report.c   exports, reports, champion flat files, self-test fixtures
+src\hf_panel.c    optional live terminal HUD renderer
 src\hf_evolve.c   self-tests, scoring worker pool, and evolution run loop
 src\hf_modes.c    compare, policy, bench, baselines, champions, and history
 ```
@@ -67,6 +68,8 @@ src\hf_modes.c    compare, policy, bench, baselines, champions, and history
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads 8
 .\build\hash-forge.exe run --seed 123 --seconds 60 --threads auto
 .\build\hash-forge.exe run --seed 123 --seconds 60 --quality deep
+.\build\hash-forge.exe run --seed 123 --seconds 60 --panel
+.\build\hash-forge.exe run --seed 123 --generations 1000 --panel --panel-rate-ms 100
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-starter --no-refresh
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-champions
 .\build\hash-forge.exe run --seed 123 --generations 100 --no-crossover --no-champions
@@ -114,6 +117,12 @@ Use `--threads auto` to run a tiny quick-scoring warmup and select the fastest
 observed worker count for that run.
 Use `--quality quick|normal|deep` to trade scoring speed for stronger per-candidate
 checks. `normal` is the default.
+Use `--panel` for an optional dark terminal HUD that redraws live telemetry:
+elapsed time, generations, total candidates evaluated, rate, thread count, best
+candidate id, quick/deep scores, decoded test health, population/source lanes,
+recent improvement signal, score sparkline, novelty telemetry, and compact opcode
+DNA. `--panel-rate-ms <n>` controls redraw cadence. `--no-color` disables ANSI
+color and escape sequences for clean captured logs.
 Use `--no-starter` or `--no-refresh` for deterministic A/B runs against the
 compact starter lane or adaptive stagnation refresh.
 Use `--no-crossover` for deterministic A/B runs that replace the crossover lane
@@ -236,9 +245,10 @@ changes, verify stored VM instruction records, and write a top-hashes report at
 `test.ps1` is the strict verification path. It builds the project, runs the
 expanded `self-test`, runs support-module tests, checks CLI error handling,
 compares deterministic 100-generation runs across `--threads 1` and
-`--threads 4`, stress-checks worker counts including the default and over-cap
-values, verifies `--threads auto`, verifies `out/report.md` and
-`out/summary.txt`, checks quality modes, checks time-limited run contracts,
+`--threads 4`, checks `--panel` parity and `--no-color`, stress-checks worker
+counts including the default and over-cap values, verifies `--threads auto`,
+verifies `out/report.md` and `out/summary.txt`, checks quality modes, checks
+time-limited run contracts,
 verifies `bench` plus `out/bench.md`, verifies policy comparison output,
 verifies established-hash baseline output, verifies champion save/list/load and
 fingerprint rescore behavior, verifies history leaderboard output, and compiles

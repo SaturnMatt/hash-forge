@@ -13,6 +13,7 @@ $sources = @(
     (Join-Path $srcDir "hf_vm.c"),
     (Join-Path $srcDir "hf_score.c"),
     (Join-Path $srcDir "hf_report.c"),
+    (Join-Path $srcDir "hf_panel.c"),
     (Join-Path $srcDir "hf_evolve.c"),
     (Join-Path $srcDir "hf_modes.c"),
     (Join-Path $srcDir "hf_db.c")

@@ -40,7 +40,7 @@ static int parse_thread_list(const char *text, BenchOptions *options) {
 static void print_usage(const char *program) {
     printf("usage:\n");
     printf("  %s self-test\n", program);
-    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover] [--no-novelty|--novelty-lane <n>] [--starter-cap <n>] [--starter-cap-after <n>] [--no-starter-cap]\n", program);
+    printf("  %s run --seed <u64> [--generations <n>] [--seconds <n>] [--threads <n|auto>] [--quality <quick|normal|deep>] [--panel] [--no-color] [--panel-rate-ms <n>] [--no-starter] [--no-refresh] [--no-champions] [--no-crossover] [--no-novelty|--novelty-lane <n>] [--starter-cap <n>] [--starter-cap-after <n>] [--no-starter-cap]\n", program);
     printf("  %s compare [--seed <u64>] [--seeds <n>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s policy [--seed <u64>] [--seeds <n>|--seed-list <csv>] [--generations <n>] [--threads <n>] [--quality <quick|normal|deep>]\n", program);
     printf("  %s bench --seconds <n> [--seed <u64>] [--threads <n[,n...]>] [--quality <quick|normal|deep>]\n", program);
@@ -113,6 +113,21 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
             options->no_novelty = 1;
             options->have_novelty_lane = 1;
             options->novelty_lane = 0;
+        } else if (strcmp(argv[i], "--panel") == 0) {
+            options->panel = 1;
+        } else if (strcmp(argv[i], "--no-color") == 0) {
+            options->no_color = 1;
+            g_color_enabled = 0;
+        } else if (strcmp(argv[i], "--panel-rate-ms") == 0 && i + 1 < argc) {
+            uint64_t panel_rate_ms = 0;
+            if (!parse_u64(argv[++i], &panel_rate_ms) ||
+                panel_rate_ms < MIN_PANEL_RATE_MS ||
+                panel_rate_ms > MAX_PANEL_RATE_MS) {
+                fprintf(stderr, "invalid --panel-rate-ms value; use %u..%u\n", MIN_PANEL_RATE_MS, MAX_PANEL_RATE_MS);
+                return 0;
+            }
+            options->panel_rate_ms = (uint32_t)panel_rate_ms;
+            options->have_panel_rate_ms = 1;
         } else if (strcmp(argv[i], "--novelty-lane") == 0 && i + 1 < argc) {
             uint64_t novelty_lane = 0;
             if (!parse_u64(argv[++i], &novelty_lane) || novelty_lane > POPULATION_SIZE) {
@@ -150,6 +165,9 @@ static int parse_run_options(int argc, char **argv, RunOptions *options) {
     }
     if (!options->have_threads) {
         options->threads = default_thread_count();
+    }
+    if (!options->have_panel_rate_ms) {
+        options->panel_rate_ms = DEFAULT_PANEL_RATE_MS;
     }
     return 1;
 }
