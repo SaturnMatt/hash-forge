@@ -37,6 +37,7 @@
 #define FAIL_BUCKET     0x04u
 #define FAIL_AVALANCHE  0x08u
 #define FAIL_NO_HASH    0x10u
+#define FAIL_DIFFERENTIAL 0x20u
 
 typedef enum OpCode {
     OP_MOV,
@@ -256,6 +257,15 @@ static uint64_t rotr64(uint64_t x, unsigned n) {
     return (x >> n) | (x << (64u - n));
 }
 
+static int popcount64(uint64_t x) {
+    int count = 0;
+    while (x) {
+        x &= x - 1;
+        count++;
+    }
+    return count;
+}
+
 static const char *op_name(uint8_t op) {
     switch (op) {
     case OP_MOV: return "MOV";
@@ -363,6 +373,7 @@ static uint32_t fail_severity(uint32_t flags) {
     if (flags & FAIL_NO_HASH) severity += 1000;
     if (flags & FAIL_ZERO) severity += 500;
     if (flags & FAIL_BUCKET) severity += 200;
+    if (flags & FAIL_DIFFERENTIAL) severity += 150;
     if (flags & FAIL_AVALANCHE) severity += 100;
     if (flags & FAIL_COLLISION) severity += 50;
     return severity;
@@ -665,6 +676,50 @@ static int64_t score_avalanche(const Candidate *candidate, ScoreScratch *scratch
     return score;
 }
 
+static int64_t score_differentials(const Candidate *candidate, ScoreScratch *scratch, uint64_t seed, int iterations, int deep, uint32_t *flags, uint32_t *evals) {
+    Rng rng = { seed };
+    int bucket_count = deep ? 16 : 8;
+    int64_t score = 0;
+    int worst_pop_abs = 0;
+    int worst_bucket_abs = 0;
+    int zero_diffs = 0;
+
+    for (int mode = 0; mode < 3; mode++) {
+        memset(scratch->bucket_counts, 0, sizeof(scratch->bucket_counts));
+        for (int i = 0; i < iterations; i++) {
+            uint64_t key = splitmix64_next(&rng) + (uint64_t)i;
+            uint64_t s = splitmix64_next(&rng) + (uint64_t)(i * 0x9e3779b9u);
+            uint64_t key2 = key;
+            uint64_t s2 = s;
+            if (mode == 0 || mode == 2) key2++;
+            if (mode == 1 || mode == 2) s2++;
+
+            uint64_t diff = eval_candidate(candidate, key, s) ^ eval_candidate(candidate, key2, s2);
+            if (diff == 0) zero_diffs++;
+            int pop_abs = popcount64(diff) - 32;
+            if (pop_abs < 0) pop_abs = -pop_abs;
+            if (pop_abs > worst_pop_abs) worst_pop_abs = pop_abs;
+            scratch->bucket_counts[diff & (uint64_t)(bucket_count - 1)]++;
+            score += 220 - (int64_t)pop_abs * pop_abs * 3;
+        }
+
+        int expected = iterations / bucket_count;
+        if (expected < 1) expected = 1;
+        for (int b = 0; b < bucket_count; b++) {
+            int d = scratch->bucket_counts[b] - expected;
+            if (d < 0) d = -d;
+            if (d > worst_bucket_abs) worst_bucket_abs = d;
+            score += 80 - d * d * 8;
+        }
+    }
+
+    *evals += (uint32_t)(iterations * 2 * 3);
+    if (zero_diffs > 0 || worst_pop_abs > 24 || worst_bucket_abs > (iterations * 3) / 4) {
+        *flags |= FAIL_DIFFERENTIAL;
+    }
+    return score - (int64_t)zero_diffs * 5000;
+}
+
 static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scratch, uint64_t run_seed, int deep, QualityMode quality) {
     const int iterations = score_iterations_for_quality(quality, deep);
     ScoreResult result = { 0, 0, 0 };
@@ -678,6 +733,7 @@ static ScoreResult score_candidate(const Candidate *candidate, ScoreScratch *scr
     result.score += score_collisions(candidate, scratch, mix_seed(run_seed, candidate->id, 11), iterations, &result.fail_flags, &result.eval_count);
     result.score += score_buckets(candidate, scratch, mix_seed(run_seed, candidate->id, 22), deep ? iterations * 2 : iterations, deep, &result.fail_flags, &result.eval_count);
     result.score += score_avalanche(candidate, scratch, mix_seed(run_seed, candidate->id, 33), iterations, deep, &result.fail_flags, &result.eval_count);
+    result.score += score_differentials(candidate, scratch, mix_seed(run_seed, candidate->id, 44), iterations, deep, &result.fail_flags, &result.eval_count);
     result.score -= (int64_t)candidate->instruction_count * 20;
     return result;
 }
@@ -778,6 +834,7 @@ static void print_fail_flags(FILE *out, uint32_t flags) {
     if (flags & FAIL_BUCKET) { fprintf(out, "%sBUCKET", wrote ? ", " : ""); wrote = 1; }
     if (flags & FAIL_AVALANCHE) { fprintf(out, "%sAVALANCHE", wrote ? ", " : ""); wrote = 1; }
     if (flags & FAIL_NO_HASH) { fprintf(out, "%sNO_HASH", wrote ? ", " : ""); wrote = 1; }
+    if (flags & FAIL_DIFFERENTIAL) { fprintf(out, "%sDIFFERENTIAL", wrote ? ", " : ""); wrote = 1; }
 }
 
 static void make_reasonable_baseline(Candidate *candidate);
@@ -1273,17 +1330,17 @@ static int run_calibration_self_tests(void) {
     ScoreResult baseline_score = score_candidate(&baseline, scratch, 1234, 1, QUALITY_NORMAL);
     printf("baseline_mixer score=%lld flags=0x%x\n", (long long)baseline_score.score, baseline_score.fail_flags);
 
-    if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_NO_HASH)) == 0,
+    if (!self_check((baseline_score.fail_flags & (FAIL_ZERO | FAIL_BUCKET | FAIL_DIFFERENTIAL | FAIL_NO_HASH)) == 0,
                     "baseline mixer core flags")) {
         free(scratch);
         return 0;
     }
 
     CalibrationCase cases[] = {
-        { "bad_constant", make_constant_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE },
-        { "bad_key_only", make_key_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE },
-        { "bad_seed_only", make_seed_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE },
-        { "bad_xor_only", make_xor_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE }
+        { "bad_constant", make_constant_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL },
+        { "bad_key_only", make_key_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL },
+        { "bad_seed_only", make_seed_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL },
+        { "bad_xor_only", make_xor_only_bad, FAIL_ZERO | FAIL_COLLISION | FAIL_AVALANCHE | FAIL_DIFFERENTIAL }
     };
 
     for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

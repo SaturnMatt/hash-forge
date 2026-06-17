@@ -265,6 +265,20 @@ both key and seed bit flipped
 
 Score how close output bit flips are to 50%.
 
+### Neighbor Differentials
+
+For neighboring inputs, compare the two output hashes:
+
+```txt
+hash(key, seed) vs hash(key + 1, seed)
+hash(key, seed) vs hash(key, seed + 1)
+hash(key, seed) vs hash(key + 1, seed + 1)
+```
+
+Score output XOR popcount near 50% and check that low bits of the output
+difference do not collapse into a tiny number of buckets. Penalize zero
+differences heavily.
+
 ### Speed Telemetry
 
 Run a tight loop over candidate evaluation and time it. Use speed as telemetry
@@ -343,8 +357,9 @@ out/bench.md
 It may include an optional `HASH_FORGE_BEST_TEST_MAIN` vector-test entry point
 so tests can compile and run the exported C against VM-derived expected outputs.
 `report.md` should be the full human-readable report for the completed run,
-including quick, deep, and total candidate hash functions evaluated, plus a
-best-candidate operator histogram and baseline comparison scores.
+including quick, deep, and total candidate hash functions evaluated, decoded
+fail flags, plus a best-candidate operator histogram and baseline comparison
+scores.
 The latest report remains at `out/report.md`; completed runs should also archive
 a copy under `out/runs/`, with `out/latest_report_path.txt` pointing to it.
 The latest export remains at `out/best.c`; completed runs should also archive a
@@ -390,7 +405,7 @@ Acceptance criteria:
 
 - VM instruction behavior for MOV, ADD, MUL, XOR, shifts, and rotates.
 - Score calibration for constant, key-only, seed-only, xor-only, and baseline
-  mixer candidates.
+  mixer candidates, including the neighboring-input differential signal.
 - Generator and mutation invariants: instruction bounds, valid opcodes and
   registers, hash writes, stable ids, and deterministic seeded behavior.
 

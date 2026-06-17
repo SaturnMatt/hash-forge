@@ -191,7 +191,10 @@ try {
 Set-Location $root
 & (Join-Path $root "build.ps1")
 
-Invoke-Captured $exe @("self-test") | Out-Null
+$selfTest = Invoke-Captured $exe @("self-test")
+Assert ($selfTest.Output -match "bad_key_only score=.*flags=0x2f") "self-test no longer flags bad_key_only differential failure"
+Assert ($selfTest.Output -match "bad_seed_only score=.*flags=0x2f") "self-test no longer flags bad_seed_only differential failure"
+Assert ($selfTest.Output -match "bad_xor_only score=.*flags=0x2b") "self-test no longer flags bad_xor_only differential failure"
 Invoke-Captured $tableTests @() | Out-Null
 Invoke-Captured $arrayTests @() | Out-Null
 

@@ -96,9 +96,10 @@ self-test that verifies the exported C still matches the VM outputs used at
 export time.
 `out\report.md` is the full human-readable run report, including run settings,
 stop reason, scores, decoded fail flags, and the best candidate instruction
-listing. It also records the best candidate operator histogram, baseline
-comparison scores, plus quick, deep, and total candidate hash functions
-evaluated during the run.
+listing. Scoring signals include trivial-output, collision, bucket,
+avalanche, and neighboring-input differential checks. The report also records
+the best candidate operator histogram, baseline comparison scores, plus quick,
+deep, and total candidate hash functions evaluated during the run.
 `out\runs\*.md` stores archived per-run copies of completed reports, while
 `out\latest_report_path.txt` points to the latest archived report.
 `out\runs\*.c` stores archived per-run standalone C exports, while
@@ -133,4 +134,4 @@ compiles `out/best.c` independently.
 
 `hash-forge self-test` includes VM instruction checks, score calibration for
 constant/key-only/seed-only/xor-only bad hashes, a baseline mixer comparison,
-and generator/mutation invariants.
+differential-score calibration, and generator/mutation invariants.
